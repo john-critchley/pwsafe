@@ -3,7 +3,7 @@ set (TEST_SRCS
   FileV4Test.cpp ItemDataTest.cpp SHA256Test.cpp SHA1Test.cpp CommandsTest.cpp ItemFieldTest.cpp
   StringXTest.cpp coretest.cpp HMAC_SHA256Test.cpp HMAC_SHA1Test.cpp KeyWrapTest.cpp TwoFishTest.cpp
   AuxParseTest.cpp UtilTest.cpp FileEncDecTest.cpp ImportTextTest.cpp TOTPTest.cpp Base32Test.cpp
-  ValidateTest.cpp MRUListTest.cpp)
+  ValidateTest.cpp MRUListTest.cpp TransportTest.cpp)
 
 if (WIN32)
   list (APPEND TEST_SRCS ../core/core.rc2)
@@ -39,3 +39,14 @@ target_link_libraries(coretest harden_interface)
 add_test(NAME Coretests
   COMMAND coretest
   )
+
+# Copy the file: transport plugin next to the coretest binary so that
+# TransportTest can find it via get_app_dir() (reads /proc/self/exe).
+if (${CMAKE_SYSTEM_NAME} MATCHES "(Linux|FreeBSD|OpenBSD)")
+  add_custom_command(TARGET coretest POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      $<TARGET_FILE:pwsafe-file>
+      $<TARGET_FILE_DIR:coretest>
+    COMMENT "Copying pwsafe-file.so alongside coretest for TransportTest"
+  )
+endif()

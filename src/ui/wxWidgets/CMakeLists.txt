@@ -73,6 +73,7 @@ list(APPEND PWSAFE_HDR_LIST
     src/ui/wxWidgets/PWFiltersPasswordDlg.h
     src/ui/wxWidgets/ManageFiltersTable.h
     src/ui/wxWidgets/StrengthMeter.h
+    src/ui/wxWidgets/OpenUrlDlg.h
     )
 
 
@@ -107,6 +108,7 @@ list(APPEND PWSAFE_SRC_LIST
     src/ui/wxWidgets/ExternalKeyboardButton.cpp
     src/ui/wxWidgets/PasswordPolicyDlg.cpp
     src/ui/wxWidgets/DbSelectionPanel.cpp
+    src/ui/wxWidgets/OpenUrlDlg.cpp
     src/ui/wxWidgets/PWSafeApp.cpp
     src/ui/wxWidgets/SafeCombinationSetupDlg.cpp
     src/ui/wxWidgets/wxUtilities.cpp

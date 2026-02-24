@@ -97,6 +97,7 @@ BEGIN_EVENT_TABLE( PasswordSafeFrame, wxFrame )
   // Connect event handlers
   EVT_MENU( wxID_NEW,                   PasswordSafeFrame::OnNewClick                    )
   EVT_MENU( wxID_OPEN,                  PasswordSafeFrame::OnOpenClick                   )
+  EVT_MENU( ID_OPEN_URL,               PasswordSafeFrame::OnOpenUrlClick                )
   EVT_MENU( wxID_CLOSE,                 PasswordSafeFrame::OnCloseClick                  )
   EVT_MENU( ID_LOCK_SAFE,               PasswordSafeFrame::OnLockSafe                    )
   EVT_MENU( ID_UNLOCK_SAFE,             PasswordSafeFrame::OnUnlockSafe                  )
@@ -552,6 +553,7 @@ void PasswordSafeFrame::CreateMenubar()
   auto menuFile = new wxMenu;
   menuFile->Append(wxID_NEW, _("&New..."), wxEmptyString, wxITEM_NORMAL);
   menuFile->Append(wxID_OPEN, _("&Open..."), wxEmptyString, wxITEM_NORMAL);
+  menuFile->Append(ID_OPEN_URL, _("Open &URL..."), wxEmptyString, wxITEM_NORMAL);
   menuFile->Append(wxID_CLOSE, _("&Close"), wxEmptyString, wxITEM_NORMAL);
 
   // Added for window managers which have no iconization concept

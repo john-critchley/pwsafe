@@ -1,0 +1,290 @@
+/*
+ * Copyright (c) 2003-2026 Rony Shapiro <ronys@pwsafe.org>.
+ * All rights reserved. Use of the code is allowed under the
+ * Artistic License 2.0 terms, as specified in the LICENSE file
+ * distributed with this code, or available from
+ * http://www.opensource.org/licenses/artistic-license-2.0.php
+ */
+
+/**
+ * \file Linux implementation of the transport plugin loader.
+ *
+ * Plugins are named pwsafe-<scheme>.so. The loader:
+ *   1. Constructs the filename from the URL scheme.
+ *   2. Searches app-binary dir first, then cwd (DEVELOPMENT builds only).
+ *   3. Pre-scans the .so bytes for PWS_TRANSPORT_INFO: to verify scheme.
+ *   4. dlopen()s the file and calls pws_plugin_init().
+ *   5. Keeps it loaded while in use; dlclose() on explicit unload.
+ */
+
+#include "../transport.h"
+
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <cassert>
+#include <cstring>
+#include <filesystem>
+#include <map>
+#include <string>
+#include <vector>
+
+namespace fs = std::filesystem;
+
+/* ---- internal state ---- */
+
+struct CacheEntry {
+  std::string url;
+  std::string cache_path;
+  bool        is_write;
+};
+
+static std::map<std::string, const PWSTransport *> s_transports; /* scheme -> transport */
+static std::map<std::string, void *>               s_handles;    /* scheme -> dlhandle  */
+static std::map<FILE *, CacheEntry>                s_file_map;   /* fd     -> cache info */
+
+/* ---- helpers ---- */
+
+static std::string extract_scheme(const std::string &url)
+{
+  size_t pos = url.find(':');
+  /* No colon → not a URL; fewer than 2 chars before colon → Windows drive letter ("C:") */
+  if (pos == std::string::npos || pos < 2)
+    return "";
+  return url.substr(0, pos);
+}
+
+static std::string get_app_dir()
+{
+  char buf[4096];
+  ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+  if (len > 0) {
+    buf[len] = '\0';
+    std::string p(buf);
+    size_t sl = p.rfind('/');
+    if (sl != std::string::npos)
+      return p.substr(0, sl);
+  }
+  return ".";
+}
+
+static std::string get_cache_dir()
+{
+  const char *xdg = getenv("XDG_CACHE_HOME");
+  std::string base;
+  if (xdg && *xdg)
+    base = xdg;
+  else {
+    const char *home = getenv("HOME");
+    base = std::string(home ? home : "/tmp") + "/.cache";
+  }
+  return base + "/pwsafe";
+}
+
+/** Sanitise URL into a safe filename component */
+static std::string url_to_filename(const std::string &url)
+{
+  std::string s;
+  s.reserve(url.size());
+  for (char c : url)
+    s += (isalnum(static_cast<unsigned char>(c)) || c == '.' || c == '-') ? c : '_';
+  if (s.size() > 180)
+    s.resize(180);
+  return s;
+}
+
+/**
+ * Scan the raw bytes of a .so for the PWS_TRANSPORT_INFO: magic string
+ * and check whether it claims to handle the given scheme.
+ */
+static bool so_claims_scheme(const std::string &path, const std::string &scheme)
+{
+  int fd = open(path.c_str(), O_RDONLY);
+  if (fd < 0)
+    return false;
+
+  struct stat st;
+  bool result = false;
+
+  if (fstat(fd, &st) == 0 && st.st_size > 0) {
+    void *mem = mmap(nullptr, static_cast<size_t>(st.st_size),
+                     PROT_READ, MAP_PRIVATE, fd, 0);
+    if (mem != MAP_FAILED) {
+      const char  magic[] = "PWS_TRANSPORT_INFO:";
+      const char *data    = static_cast<const char *>(mem);
+      size_t      size    = static_cast<size_t>(st.st_size);
+
+      const char *hit = static_cast<const char *>(
+          memmem(data, size, magic, strlen(magic)));
+
+      if (hit) {
+        /* Format: PWS_TRANSPORT_INFO:<abi>:<schemes>:<desc> */
+        const char *p = hit + strlen(magic);
+        const char *end = data + size;
+
+        /* skip abi field */
+        const char *c1 = static_cast<const char *>(memchr(p, ':', end - p));
+        if (c1) {
+          ++c1;
+          /* schemes field */
+          const char *c2 = static_cast<const char *>(memchr(c1, ':', end - c1));
+          if (c2) {
+            std::string schemes(c1, c2 - c1);
+            /* check comma-separated list */
+            std::string haystack = schemes + ",";
+            std::string needle   = scheme  + ",";
+            result = (haystack.find(needle) != std::string::npos);
+          }
+        }
+      }
+      munmap(mem, static_cast<size_t>(st.st_size));
+    }
+  }
+  close(fd);
+  return result;
+}
+
+/**
+ * Find the plugin file for the given scheme.
+ * Tries: <app_dir>/pwsafe-<scheme>.so
+ *        <cwd>/pwsafe-<scheme>.so  (DEVELOPMENT builds only)
+ */
+static std::string find_plugin_path(const std::string &scheme)
+{
+  const std::string filename = "pwsafe-" + scheme + ".so";
+
+  std::vector<std::string> dirs = { get_app_dir() };
+#ifdef DEVELOPMENT
+  dirs.push_back(".");
+#endif
+
+  for (const auto &dir : dirs) {
+    std::string path = dir + "/" + filename;
+    if (access(path.c_str(), R_OK) == 0)
+      return path;
+  }
+  return "";
+}
+
+/* ---- public API ---- */
+
+bool pws_is_transport_url(const std::string &path)
+{
+  return !extract_scheme(path).empty();
+}
+
+const PWSTransport *pws_find_transport(const std::string &url)
+{
+  std::string scheme = extract_scheme(url);
+  if (scheme.empty())
+    return nullptr;
+
+  /* Already loaded? */
+  auto it = s_transports.find(scheme);
+  if (it != s_transports.end())
+    return it->second;
+
+  /* Find the plugin file */
+  std::string path = find_plugin_path(scheme);
+  if (path.empty()) {
+    return nullptr;   /* caller shows "plugin not found" dialog */
+  }
+
+  /* Verify identity string before dlopen */
+  if (!so_claims_scheme(path, scheme)) {
+    return nullptr;   /* wrong plugin or renamed file */
+  }
+
+  /* Load it */
+  void *handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+  if (!handle)
+    return nullptr;
+
+  auto *init_fn = reinterpret_cast<void (*)(pws_register_fn_t)>(
+      dlsym(handle, "pws_plugin_init"));
+
+  if (!init_fn) {
+    dlclose(handle);
+    return nullptr;
+  }
+
+  /* Plugin calls the registration callback with its PWSTransport* */
+  init_fn([](const PWSTransport *t) {
+    if (!t || t->abi_version != PWSTransport_ABI_VERSION)
+      return;
+    /* register all comma-separated schemes */
+    std::string schemes = t->scheme;
+    schemes += ",";
+    size_t pos = 0, comma;
+    while ((comma = schemes.find(',', pos)) != std::string::npos) {
+      std::string s = schemes.substr(pos, comma - pos);
+      if (!s.empty())
+        s_transports[s] = t;
+      pos = comma + 1;
+    }
+  });
+
+  /* Did it register for our scheme? */
+  it = s_transports.find(scheme);
+  if (it == s_transports.end()) {
+    dlclose(handle);
+    return nullptr;
+  }
+
+  s_handles[scheme] = handle;
+  return it->second;
+}
+
+std::string pws_get_cache_path(const std::string &url)
+{
+  std::string dir = get_cache_dir();
+  /* Create cache dir if it doesn't exist */
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  return dir + "/" + url_to_filename(url);
+}
+
+void pws_cache_register(FILE *fd, const std::string &url,
+                        const std::string &cache_path, bool is_write)
+{
+  s_file_map[fd] = { url, cache_path, is_write };
+}
+
+bool pws_cache_lookup(FILE *fd, std::string &url,
+                      std::string &cache_path, bool &is_write)
+{
+  auto it = s_file_map.find(fd);
+  if (it == s_file_map.end())
+    return false;
+  url        = it->second.url;
+  cache_path = it->second.cache_path;
+  is_write   = it->second.is_write;
+  return true;
+}
+
+void pws_cache_remove(FILE *fd)
+{
+  s_file_map.erase(fd);
+}
+
+void pws_transport_unload(const std::string &scheme)
+{
+  auto th = s_transports.find(scheme);
+  if (th == s_transports.end())
+    return;
+
+  const PWSTransport *t = th->second;
+  if (t->cleanup)
+    t->cleanup();
+
+  s_transports.erase(th);
+
+  auto hh = s_handles.find(scheme);
+  if (hh != s_handles.end()) {
+    dlclose(hh->second);
+    s_handles.erase(hh);
+  }
+}

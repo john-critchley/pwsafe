@@ -73,6 +73,7 @@ enum {
   // File menu
   ID_RECENTSAFES,
   ID_MENU_CLEAR_MRU,
+  ID_OPEN_URL,
   ID_EXPORTMENU,
   ID_EXPORT2OLD1XFORMAT,
   ID_EXPORT2V2FORMAT,
@@ -272,6 +273,9 @@ public:
 
   /// wxEVT_COMMAND_MENU_SELECTED event handler for wxID_OPEN
   void OnOpenClick( wxCommandEvent& event );
+
+  /// wxEVT_COMMAND_MENU_SELECTED event handler for ID_OPEN_URL
+  void OnOpenUrlClick( wxCommandEvent& event );
 
   /// wxEVT_COMMAND_MENU_SELECTED event handler for wxID_CLOSE
   void OnCloseClick( wxCommandEvent& event );

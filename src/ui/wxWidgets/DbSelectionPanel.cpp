@@ -22,11 +22,12 @@
 #endif
 
 #include <wx/filename.h>
+#include <wx/filedlg.h>
 
 #include "core/PWScore.h"
+#include "os/transport.h"
 
 #include "DbSelectionPanel.h"
-#include "OpenFilePickerValidator.h"
 #include "SafeCombinationCtrl.h"
 #include "wxUtilities.h"
 
@@ -37,7 +38,7 @@
 #define ID_YUBISTATUS 10002
 #endif
 
-DbSelectionPanel::DbSelectionPanel(wxWindow* parent, 
+DbSelectionPanel::DbSelectionPanel(wxWindow* parent,
                                     const wxString& filePrompt,
                                     const wxString& filePickerCtrlTitle,
                                     bool autoValidate,
@@ -45,11 +46,12 @@ DbSelectionPanel::DbSelectionPanel(wxWindow* parent,
                                     unsigned rowsep,
                                     int buttonConfirmationId,
                                     const wxString filename) : wxPanel(parent),
-                                                                m_filepicker(nullptr),
+                                                                m_locationCtrl(nullptr),
                                                                 m_sc(nullptr),
                                                                 m_bAutoValidate(autoValidate),
                                                                 m_core(core),
-                                                                m_confirmationButtonId(buttonConfirmationId)
+                                                                m_confirmationButtonId(buttonConfirmationId),
+                                                                m_browseTitle(filePickerCtrlTitle)
 {
   wxSizerFlags borderFlags = wxSizerFlags().Border(wxLEFT|wxRIGHT, SideMargin);
 
@@ -64,18 +66,20 @@ DbSelectionPanel::DbSelectionPanel(wxWindow* parent,
   panelSizer->Add(new wxStaticText(this, wxID_ANY, filePrompt), borderFlags);
   panelSizer->AddSpacer(RowSeparation);
   m_filepath = filename;
-  OpenFilePickerValidator validator(m_filepath);
-  m_filepicker = new wxFilePickerCtrl(this, wxID_ANY, wxEmptyString,
-                                          filePickerCtrlTitle,
-                                          _("Password Safe Databases (*.psafe4; *.psafe3; *.dat)|*.psafe4;*.psafe3;*.dat|Password Safe Backups (*.bak)|*.bak|Password Safe Intermediate Backups (*.ibak)|*.ibak|All files (*.*; *)|*.*;*"), 
-                                          wxDefaultPosition, wxDefaultSize, 
-                                          wxFLP_DEFAULT_STYLE | wxFLP_USE_TEXTCTRL, 
-                                          validator);
-  panelSizer->Add(m_filepicker, borderFlags.Expand());
+
+  /* Location row: combo box (accepts both local paths and transport URLs)
+   * plus a Browse button for local-file selection. */
+  m_locationCtrl = new wxComboBox(this, wxID_ANY, filename,
+                                  wxDefaultPosition, wxDefaultSize,
+                                  0, nullptr, wxCB_DROPDOWN);
+  auto *browseBtn = new wxButton(this, wxID_ANY, _("Browse..."));
+  Bind(wxEVT_BUTTON, &DbSelectionPanel::OnBrowseClicked, this, browseBtn->GetId());
+
+  auto *locationRow = new wxBoxSizer(wxHORIZONTAL);
+  locationRow->Add(m_locationCtrl, 1, wxEXPAND | wxALL, 0);
+  locationRow->Add(browseBtn, 0, wxLEFT | wxALIGN_CENTER_VERTICAL, 5);
+  panelSizer->Add(locationRow, borderFlags.Expand());
   panelSizer->AddSpacer(RowSeparation*rowsep);
-  m_filepicker->Connect( m_filepicker->GetEventType(), 
-             wxFileDirPickerEventHandler(DbSelectionPanel::OnFilePicked),
-             nullptr, this);
 
   panelSizer->Add(new wxStaticText(this, wxID_ANY, _("Master Password:")), borderFlags);
   panelSizer->AddSpacer(RowSeparation);
@@ -123,24 +127,52 @@ bool DbSelectionPanel::DoValidation()
   //the data has not been transferred from the window to our members yet, so get them from the controls
   if (wxWindow::Validate()) {
 
-    wxFileName wxfn(m_filepicker->GetPath());
+    wxString path = m_locationCtrl->GetValue();
 
-    //Did the user enter a valid file path
-    if (!wxfn.FileExists()) {
-      wxMessageBox( _("File or path not found."), _("Error"), wxOK | wxICON_EXCLAMATION, this);
+    if (path.IsEmpty()) {
+      wxMessageBox(_("You must specify a file or URL."), _("Error"), wxOK | wxICON_EXCLAMATION, this);
       return false;
     }
 
-    //Did he enter the same file that's currently open?
-    if (wxfn.SameAs(wxFileName(towxstring(m_core->GetCurFile())))) {
-      // It is the same damn file
-      wxMessageBox(_("That file is already open."), _("Error"), wxOK | wxICON_WARNING, this);
-      return false;
+    std::string path_utf8(path.mb_str(wxConvUTF8));
+
+    if (pws_is_transport_url(path_utf8)) {
+      /* URL path: verify that a transport plugin exists for the scheme */
+      const PWSTransport *t = pws_find_transport(path_utf8);
+      if (!t) {
+        wxString scheme = path.BeforeFirst(':');
+        wxMessageBox(
+          wxString::Format(_("No transport plugin found for scheme '%s'.\nCannot open '%s'."),
+                           scheme, path),
+          _("Transport plugin not found"), wxOK | wxICON_ERROR, this);
+        return false;
+      }
+      /* For URL paths the same-file check compares strings directly */
+      if (path_utf8 == std::string(towxstring(m_core->GetCurFile()).mb_str(wxConvUTF8))) {
+        wxMessageBox(_("That database is already open."), _("Error"), wxOK | wxICON_WARNING, this);
+        return false;
+      }
+    } else {
+      /* Local file path */
+      wxFileName wxfn(path);
+
+      //Did the user enter a valid file path
+      if (!wxfn.FileExists()) {
+        wxMessageBox(_("File or path not found."), _("Error"), wxOK | wxICON_EXCLAMATION, this);
+        return false;
+      }
+
+      //Did he enter the same file that's currently open?
+      if (wxfn.SameAs(wxFileName(towxstring(m_core->GetCurFile())))) {
+        // It is the same damn file
+        wxMessageBox(_("That file is already open."), _("Error"), wxOK | wxICON_WARNING, this);
+        return false;
+      }
     }
 
     m_combination = m_yubiCombination.empty() ? m_sc->GetCombination() : m_yubiCombination;
-    //Does the combination match?
-    if (m_core->CheckPasskey(tostringx(wxfn.GetFullPath()), m_combination) != PWScore::SUCCESS) {
+    //Does the combination match?  CheckPasskey calls pws_os::FOpen which handles transport URLs.
+    if (m_core->CheckPasskey(tostringx(path), m_combination) != PWScore::SUCCESS) {
       wxString errmess(_("Incorrect master password, not a Password Safe database,\nor a corrupt database."));
       wxMessageBox(errmess, _("Can't open a password database"), wxOK | wxICON_ERROR, this);
       SelectCombinationText();
@@ -148,6 +180,7 @@ bool DbSelectionPanel::DoValidation()
       return false;
     }
 
+    m_filepath = path;
     return true;
   }
   else {
@@ -167,11 +200,29 @@ bool DbSelectionPanel::TransferDataFromWindow()
 }
 
 
-void DbSelectionPanel::OnFilePicked(wxFileDirPickerEvent& WXUNUSED(event))
+void DbSelectionPanel::OnBrowseClicked(wxCommandEvent& WXUNUSED(event))
 {
-  // Don't shift focus if we are in the text ctrl
-  if ( !wxDynamicCast(FindFocus(), wxTextCtrl) )
+  wxString curVal = m_locationCtrl->GetValue();
+
+  wxFileDialog dlg(this, m_browseTitle, wxEmptyString, wxEmptyString,
+                   _("Password Safe Databases (*.psafe4; *.psafe3; *.dat)|*.psafe4;*.psafe3;*.dat"
+                     "|Password Safe Backups (*.bak)|*.bak"
+                     "|Password Safe Intermediate Backups (*.ibak)|*.ibak"
+                     "|All files (*.*; *)|*.*;*"),
+                   wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+
+  /* Pre-navigate to the current file's directory if it is a local path */
+  if (!curVal.IsEmpty() &&
+      !pws_is_transport_url(std::string(curVal.mb_str(wxConvUTF8)))) {
+    wxFileName fn(curVal);
+    if (fn.DirExists())
+      dlg.SetDirectory(fn.GetPath());
+  }
+
+  if (dlg.ShowModal() == wxID_OK) {
+    m_locationCtrl->SetValue(dlg.GetPath());
     m_sc->SelectCombinationText();
+  }
 }
 
 #ifndef NO_YUBI

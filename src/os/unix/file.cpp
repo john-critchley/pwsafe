@@ -32,6 +32,7 @@
 
 #include "../file.h"
 #include "../env.h"
+#include "../transport.h"
 
 #include "core/core.h"
 #include "core/StringXStream.h"
@@ -41,30 +42,38 @@ using namespace std;
 
 const TCHAR pws_os::PathSeparator = _T('/');
 
+static std::string toUtf8(const stringT &ws)
+{
+  size_t n = wcstombs(nullptr, ws.c_str(), 0);
+  if (n == static_cast<size_t>(-1)) return "";
+  std::string s(n, '\0');
+  wcstombs(&s[0], ws.c_str(), n + 1);
+  return s;
+}
+
 bool pws_os::FileExists(const stringT &filename)
 {
+  std::string fn = toUtf8(filename);
+  if (pws_is_transport_url(fn)) {
+    const PWSTransport *t = pws_find_transport(fn);
+    return t && (t->exists(fn.c_str()) == 0);
+  }
   struct stat statbuf;
-  int status;
-  size_t N = wcstombs(nullptr, filename.c_str(), 0) + 1;
-  char *fn = new char[N];
-  wcstombs(fn, filename.c_str(), N);
-  status = ::stat(fn, &statbuf);
-  delete[] fn;
-  return (status == 0);
+  return (::stat(fn.c_str(), &statbuf) == 0);
 }
 
 bool pws_os::FileExists(const stringT &filename, bool &bReadOnly)
 {
-  bool retval;
   bReadOnly = false;
-  size_t N = wcstombs(nullptr, filename.c_str(), 0) + 1;
-  char *fn = new char[N];
-  wcstombs(fn, filename.c_str(), N);
-  retval = (::access(fn, R_OK) == 0);
-  if (retval) {
-    bReadOnly = (::access(fn, W_OK) != 0);
+  std::string fn = toUtf8(filename);
+  if (pws_is_transport_url(fn)) {
+    const PWSTransport *t = pws_find_transport(fn);
+    /* Remote files: assume read-write if they exist */
+    return t && (t->exists(fn.c_str()) == 0);
   }
-  delete[] fn;
+  bool retval = (::access(fn.c_str(), R_OK) == 0);
+  if (retval)
+    bReadOnly = (::access(fn.c_str(), W_OK) != 0);
   return retval;
 }
 
@@ -294,6 +303,16 @@ void pws_os::TryUnlockFile(const stringT &filename, HANDLE &lockFileHandle)
 bool pws_os::LockFile(const stringT &filename, stringT &locker,
                       HANDLE &lockFileHandle)
 {
+  std::string fn = toUtf8(filename);
+  if (pws_is_transport_url(fn)) {
+    const PWSTransport *t = pws_find_transport(fn);
+    if (!t) return false;
+    char token[256] = {};
+    int rc = t->lock(fn.c_str(), token, sizeof(token));
+    /* rc == 0: locked; rc == ENOTSUP (or plugin no-op): proceed unlocked */
+    return (rc == 0 || rc == ENOTSUP);
+  }
+
   UNREFERENCED_PARAMETER(lockFileHandle);
   const stringT lock_filename = GetLockFileName(filename);
 
@@ -368,6 +387,13 @@ bool pws_os::LockFile(const stringT &filename, stringT &locker,
 
 void pws_os::UnlockFile(const stringT &filename, HANDLE &lockFileHandle)
 {
+  std::string fn = toUtf8(filename);
+  if (pws_is_transport_url(fn)) {
+    const PWSTransport *t = pws_find_transport(fn);
+    if (t) t->unlock(fn.c_str(), ""); /* token storage deferred (WebDAV phase) */
+    return;
+  }
+
   UNREFERENCED_PARAMETER(lockFileHandle);
   stringT lock_filename = GetLockFileName(filename);
   size_t lfs = wcstombs(nullptr, lock_filename.c_str(), lock_filename.length()) + 1;
@@ -386,37 +412,67 @@ bool pws_os::IsLockedFile(const stringT &filename)
 std::FILE *pws_os::FOpen(const stringT &filename, const TCHAR *mode)
 {
   if (filename.empty()) { // set to stdin/stdout, depending on mode[0] (r/w/a)
-	  return mode[0] == L'r' ? stdin : stdout;
+    return mode[0] == L'r' ? stdin : stdout;
   }
-  
-  const char *cfname = nullptr;
-  const char *cmode = nullptr;
-  size_t fnsize = wcstombs(nullptr, filename.c_str(), 0) + 1;
-  assert(fnsize > 1);
-  cfname = new char[fnsize];
-  wcstombs(const_cast<char *>(cfname), filename.c_str(), fnsize);
+
+  std::string fn = toUtf8(filename);
+
+  if (pws_is_transport_url(fn)) {
+    const PWSTransport *t = pws_find_transport(fn);
+    if (!t) return nullptr;
+
+    std::string cache = pws_get_cache_path(fn);
+    bool writing = (mode[0] != L'r');
+
+    if (!writing) {
+      if (t->fetch(fn.c_str(), cache.c_str()) != 0)
+        return nullptr;  /* fetch failed; caller may offer offline mode */
+    }
+
+    FILE *fd = ::fopen(cache.c_str(), writing ? "wb" : "rb");
+    if (fd)
+      pws_cache_register(fd, fn, cache, writing);
+    return fd;
+  }
 
   size_t modesize = wcstombs(nullptr, mode, 0) + 1;
   assert(modesize > 0);
-  cmode = new char[modesize];
-  wcstombs(const_cast<char *>(cmode), mode, modesize);
-  FILE *retval = ::fopen(cfname, cmode);
-  delete[] cfname;
+  char *cmode = new char[modesize];
+  wcstombs(cmode, mode, modesize);
+  FILE *retval = ::fopen(fn.c_str(), cmode);
   delete[] cmode;
   return retval;
 }
 
 int pws_os::FClose(std::FILE *fd, const bool &bIsWrite)
 {
-  if (fd != nullptr) {
+  if (fd == nullptr)
+    return 0;
+
+  std::string url, cache_path;
+  bool was_write;
+  if (pws_cache_lookup(fd, url, cache_path, was_write)) {
+    if (bIsWrite) fflush(fd);
+    pws_cache_remove(fd);   /* remove before fclose so fd isn't used after free */
+    int rc = fclose(fd);
+
     if (bIsWrite) {
-      // Flush the data buffers
-      fflush(fd);
+      const PWSTransport *t = pws_find_transport(url);
+      if (t) {
+        int store_rc = t->store(cache_path.c_str(), url.c_str());
+        if (store_rc != 0) {
+          /* Store failed: local cache is intact; caller should warn user */
+          /* Return a distinct error so caller can detect this */
+          return store_rc;
+        }
+      }
     }
-    // Now close file
-    return fclose(fd);
+    return rc;
   }
-  return 0;
+
+  if (bIsWrite)
+    fflush(fd);
+  return fclose(fd);
 }
 
 size_t pws_os::fileLength(std::FILE *fp)

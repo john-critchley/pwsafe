@@ -77,8 +77,10 @@ endif ()
     unix/unicode2keysym.cpp
     unix/utf8conv.cpp
     unix/xsendstring.cpp
+    unix/transport.cpp
     )
   set (OS_YUBI_SRC unix/PWYubi.cpp)
+  add_subdirectory(plugins/file)
 else()
   message (FATAL_ERROR "Unsupported OS "
     ${CMAKE_SYSTEM_NAME}
@@ -91,3 +93,6 @@ endif()
 
 add_library(os STATIC ${OS_SRCS})
 target_link_libraries(os PRIVATE harden_interface)
+if (${CMAKE_SYSTEM_NAME} MATCHES "(Linux|FreeBSD|OpenBSD)")
+  target_link_libraries(os PRIVATE dl)
+endif()

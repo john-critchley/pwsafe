@@ -19,10 +19,9 @@
 #include "YubiMixin.h"
 #endif
 
-class wxFilePickerCtrl;
+class wxComboBox;
 class SafeCombinationCtrl;
 class PWScore;
-class wxFileDirPickerEvent;
 
 /*
  * This is a re-usable class for having the user select a db and
@@ -64,7 +63,7 @@ public:
 
   bool DoValidation();
 
-  void OnFilePicked(wxFileDirPickerEvent &evt);
+  void OnBrowseClicked(wxCommandEvent &evt);
 
   wxString m_filepath;
   StringX m_combination;
@@ -75,11 +74,12 @@ private:
   void OnPollingTimer(wxTimerEvent& event);
 #endif
 
-  wxFilePickerCtrl* m_filepicker;
+  wxComboBox* m_locationCtrl;
   SafeCombinationCtrl* m_sc;
   bool m_bAutoValidate;
   PWScore* m_core;
   int m_confirmationButtonId;
+  wxString m_browseTitle;
   StringX m_yubiCombination; // needed to adjust TransferDataFromWindow()
 };
 

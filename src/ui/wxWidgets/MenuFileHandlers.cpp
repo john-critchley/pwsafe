@@ -23,6 +23,7 @@
 #include <wx/msw/msvcrt.h>
 #endif
 
+#include <wx/config.h>
 #include <wx/filename.h>
 #include <wx/tokenzr.h>
 #include <wx/utils.h> // for wxLaunchDefaultBrowser
@@ -32,6 +33,7 @@
 #include "core/XML/XMLDefs.h"
 #include "os/sleep.h"
 #include "os/file.h"
+#include "os/transport.h"
 #include "os/env.h"
 
 #include "CompareDlg.h"
@@ -39,6 +41,7 @@
 #include "ImportTextDlg.h"
 #include "ImportXmlDlg.h"
 #include "MergeDlg.h"
+#include "OpenUrlDlg.h"
 #include "PasswordSafeFrame.h"
 #include "PasswordSafeSearch.h"
 #include "PropertiesDlg.h"
@@ -247,6 +250,60 @@ void PasswordSafeFrame::OnOpenClick(wxCommandEvent& WXUNUSED(evt))
   }
 }
 
+// ---------------------------------------------------------------------------
+// URL history helpers — stored in wxConfig under /URLHistory/url0..url9
+// ---------------------------------------------------------------------------
+
+static void LoadUrlHistory(wxArrayString &urls)
+{
+  auto *cfg = wxConfig::Get();
+  for (int i = 0; i < 10; i++) {
+    wxString val = cfg->Read(wxString::Format("/URLHistory/url%d", i), wxEmptyString);
+    if (!val.IsEmpty())
+      urls.Add(val);
+  }
+}
+
+static void SaveUrlHistory(const wxString &url)
+{
+  wxArrayString existing;
+  LoadUrlHistory(existing);
+  int idx = existing.Index(url);
+  if (idx != wxNOT_FOUND)
+    existing.RemoveAt(idx);     // deduplicate — RemoveAt by index, never asserts
+  existing.Insert(url, 0);      // newest first
+  if (existing.GetCount() > 10)
+    existing.resize(10);
+  auto *cfg = wxConfig::Get();
+  cfg->DeleteGroup("/URLHistory");
+  for (size_t i = 0; i < existing.GetCount(); i++)
+    cfg->Write(wxString::Format("/URLHistory/url%zu", i), existing[i]);
+}
+
+/*!
+ * wxEVT_COMMAND_MENU_SELECTED event handler for ID_OPEN_URL
+ */
+
+void PasswordSafeFrame::OnOpenUrlClick(wxCommandEvent& WXUNUSED(evt))
+{
+  wxArrayString history;
+  LoadUrlHistory(history);
+
+  OpenUrlDlg dlg(this, history);
+  if (dlg.ShowModal() != wxID_OK)
+    return;
+
+  wxString url = dlg.GetURL();
+  if (url.IsEmpty())
+    return;
+
+  int rc = Open(url);
+  if (rc == PWScore::SUCCESS) {
+    SaveUrlHistory(url);
+    FinishGoodOpen();
+  }
+}
+
 void PasswordSafeFrame::FinishGoodOpen()
 {
   m_core.ResumeOnDBNotification();
@@ -335,10 +392,14 @@ int PasswordSafeFrame::Save(SaveType savetype /* = SaveType::INVALID*/)
   if (!m_core.IsDbFileSet())
     return SaveAs();
 
+  // Transport URLs are managed remotely; local file-rename backup doesn't apply.
+  const std::string curfile_utf8(towxstring(m_core.GetCurFile()).mb_str(wxConvUTF8));
+  const bool isTransportUrl = pws_is_transport_url(curfile_utf8);
+
   switch (m_core.GetReadFileVersion()) {
     case PWSfile::VCURRENT:
     case PWSfile::V40:
-      if (prefs->GetPref(PWSprefs::BackupBeforeEverySave)) {
+      if (!isTransportUrl && prefs->GetPref(PWSprefs::BackupBeforeEverySave)) {
         unsigned int maxNumIncBackups = prefs->GetPref(PWSprefs::BackupMaxIncremented);
         int backupSuffix = prefs->GetPref(PWSprefs::BackupSuffix);
         std::wstring userBackupPrefix = prefs->GetPref(PWSprefs::BackupPrefixValue).c_str();
@@ -373,7 +434,7 @@ int PasswordSafeFrame::Save(SaveType savetype /* = SaveType::INVALID*/)
                return SaveAs();
           }
         } // BackupCurFile failed
-      } // BackupBeforeEverySave
+      } // BackupBeforeEverySave && !isTransportUrl
       break;
     case PWSfile::NEWFILE:
     {
