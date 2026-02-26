@@ -78,9 +78,11 @@ endif ()
     unix/utf8conv.cpp
     unix/xsendstring.cpp
     unix/transport.cpp
+    unix/transport_lockd.cpp
     )
   set (OS_YUBI_SRC unix/PWYubi.cpp)
   add_subdirectory(plugins/file)
+  add_subdirectory(plugins/webdav)
 else()
   message (FATAL_ERROR "Unsupported OS "
     ${CMAKE_SYSTEM_NAME}

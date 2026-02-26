@@ -58,8 +58,10 @@ static std::string strip_file_scheme(const char *url)
     s = s.substr(5);                         /* strip "file:" → "/absolute/path" */
   }
 
+#if defined(_DEBUG) || defined(DEBUG)
   fprintf(stderr, "[pwsafe-file] strip_file_scheme: url=%s  path=%s\n",
           url, s.c_str());
+#endif
   return s;
 }
 
@@ -69,12 +71,14 @@ static int file_fetch(const char *url, const char *local_path)
   std::error_code ec;
   fs::copy_file(src, local_path,
                 fs::copy_options::overwrite_existing, ec);
+#if defined(_DEBUG) || defined(DEBUG)
   if (ec)
     fprintf(stderr, "[pwsafe-file] fetch failed: src=%s  dst=%s  error=%s\n",
             src.c_str(), local_path, ec.message().c_str());
   else
     fprintf(stderr, "[pwsafe-file] fetch ok: src=%s  dst=%s\n",
             src.c_str(), local_path);
+#endif
   return ec ? ec.value() : 0;
 }
 

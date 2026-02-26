@@ -29,6 +29,7 @@
 #include <cstring>
 #include <filesystem>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,7 @@ struct CacheEntry {
 static std::map<std::string, const PWSTransport *> s_transports; /* scheme -> transport */
 static std::map<std::string, void *>               s_handles;    /* scheme -> dlhandle  */
 static std::map<FILE *, CacheEntry>                s_file_map;   /* fd     -> cache info */
+static std::set<std::string>                       s_active_locks; /* urls we have locked */
 
 /* ---- helpers ---- */
 
@@ -287,4 +289,21 @@ void pws_transport_unload(const std::string &scheme)
     dlclose(hh->second);
     s_handles.erase(hh);
   }
+}
+
+/* ---- active-lock registry ---- */
+
+void pws_lock_register(const std::string &url)
+{
+  s_active_locks.insert(url);
+}
+
+void pws_lock_unregister(const std::string &url)
+{
+  s_active_locks.erase(url);
+}
+
+bool pws_has_lock(const std::string &url)
+{
+  return s_active_locks.count(url) > 0;
 }

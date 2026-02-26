@@ -305,11 +305,16 @@ bool pws_os::LockFile(const stringT &filename, stringT &locker,
 {
   std::string fn = toUtf8(filename);
   if (pws_is_transport_url(fn)) {
-    const PWSTransport *t = pws_find_transport(fn);
-    if (!t) return false;
-    char token[256] = {};
-    int rc = t->lock(fn.c_str(), token, sizeof(token));
-    /* rc == 0: locked; rc == ENOTSUP (or plugin no-op): proceed unlocked */
+    /* Delegate to the lock daemon (child process) so that signal handlers
+     * and destructors need only write() to the pipe, not call libcurl. */
+    int rc = pws_lockd_acquire(fn);
+#if defined(_DEBUG) || defined(DEBUG)
+    fprintf(stderr, "[pwsafe-lock] LockFile %s → rc=%d %s\n",
+            fn.c_str(), rc,
+            rc == 0 ? "(locked)" : rc == ENOTSUP ? "(no-op)" : "(failed)");
+#endif
+    if (rc == 0)
+      pws_lock_register(fn);   /* so IsLockedFile returns true for this URL */
     return (rc == 0 || rc == ENOTSUP);
   }
 
@@ -389,8 +394,12 @@ void pws_os::UnlockFile(const stringT &filename, HANDLE &lockFileHandle)
 {
   std::string fn = toUtf8(filename);
   if (pws_is_transport_url(fn)) {
-    const PWSTransport *t = pws_find_transport(fn);
-    if (t) t->unlock(fn.c_str(), ""); /* token storage deferred (WebDAV phase) */
+    /* write() to the lock daemon — async-signal-safe */
+    pws_lockd_release(fn);
+    pws_lock_unregister(fn);
+#if defined(_DEBUG) || defined(DEBUG)
+    fprintf(stderr, "[pwsafe-lock] UnlockFile %s\n", fn.c_str());
+#endif
     return;
   }
 
@@ -405,6 +414,9 @@ void pws_os::UnlockFile(const stringT &filename, HANDLE &lockFileHandle)
 
 bool pws_os::IsLockedFile(const stringT &filename)
 {
+  std::string fn = toUtf8(filename);
+  if (pws_is_transport_url(fn))
+    return pws_has_lock(fn);   /* check our registry, not a .plk file */
   const stringT lock_filename = GetLockFileName(filename);
   return pws_os::FileExists(lock_filename);
 }
@@ -457,14 +469,19 @@ int pws_os::FClose(std::FILE *fd, const bool &bIsWrite)
     int rc = fclose(fd);
 
     if (bIsWrite) {
-      const PWSTransport *t = pws_find_transport(url);
-      if (t) {
-        int store_rc = t->store(cache_path.c_str(), url.c_str());
-        if (store_rc != 0) {
-          /* Store failed: local cache is intact; caller should warn user */
-          /* Return a distinct error so caller can detect this */
-          return store_rc;
-        }
+      int store_rc;
+      if (pws_has_lock(url)) {
+        /* Lock is daemon-held: the child's s_lock_tokens has the token but the
+         * parent's copy is empty after fork.  Route through daemon so the child
+         * calls t->store() with the If: (<token>) header. */
+        store_rc = pws_lockd_store(cache_path, url);
+      } else {
+        const PWSTransport *t = pws_find_transport(url);
+        store_rc = t ? t->store(cache_path.c_str(), url.c_str()) : ENOENT;
+      }
+      if (store_rc != 0) {
+        /* Store failed: local cache is intact; caller should warn user */
+        return store_rc;
       }
     }
     return rc;
