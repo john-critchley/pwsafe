@@ -43,11 +43,14 @@ add_test(NAME Coretests
 
 # Copy the file: transport plugin next to the coretest binary so that
 # TransportTest can find it via get_app_dir() (reads /proc/self/exe).
+# Use add_custom_target(ALL ...) rather than POST_BUILD so that Ninja
+# includes this as an explicit build step when building the 'all' target.
 if (${CMAKE_SYSTEM_NAME} MATCHES "(Linux|FreeBSD|OpenBSD)")
-  add_custom_command(TARGET coretest POST_BUILD
+  add_custom_target(copy_file_transport_plugin ALL
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
       $<TARGET_FILE:pwsafe-file>
-      $<TARGET_FILE_DIR:coretest>
+      ${CMAKE_CURRENT_BINARY_DIR}/pwsafe-file.so
     COMMENT "Copying pwsafe-file.so alongside coretest for TransportTest"
   )
+  add_dependencies(copy_file_transport_plugin pwsafe-file)
 endif()

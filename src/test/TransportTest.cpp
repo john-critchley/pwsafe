@@ -38,6 +38,10 @@ namespace fs = std::filesystem;
 
 // ---- local helpers ----------------------------------------------------------
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4996)  /* wcstombs: transport tests are Linux-only anyway */
+#endif
 static std::string toUtf8(const StringX &s)
 {
   size_t n = wcstombs(nullptr, s.c_str(), 0);
@@ -46,6 +50,9 @@ static std::string toUtf8(const StringX &s)
   wcstombs(&out[0], s.c_str(), n + 1);
   return out;
 }
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 static std::vector<uint8_t> read_file_bytes(const std::string &path)
 {
