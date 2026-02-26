@@ -38,6 +38,7 @@ target_link_libraries(coretest harden_interface)
 
 add_test(NAME Coretests
   COMMAND coretest
+  WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
   )
 
 # Copy the file: transport plugin next to the coretest binary so that

@@ -43,7 +43,8 @@ jobs:
       run: cmake --build build
 
     - name: Test
-      run: cmake --build build --target test
+      working-directory: build
+      run: ctest --output-on-failure --force-new-ctest-process
 
     - name: Build Windows Artifact
       if: ${{ runner.os == 'Windows' }}
