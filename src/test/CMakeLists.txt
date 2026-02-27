@@ -3,7 +3,13 @@ set (TEST_SRCS
   FileV4Test.cpp ItemDataTest.cpp SHA256Test.cpp SHA1Test.cpp CommandsTest.cpp ItemFieldTest.cpp
   StringXTest.cpp coretest.cpp HMAC_SHA256Test.cpp HMAC_SHA1Test.cpp KeyWrapTest.cpp TwoFishTest.cpp
   AuxParseTest.cpp UtilTest.cpp FileEncDecTest.cpp ImportTextTest.cpp TOTPTest.cpp Base32Test.cpp
-  ValidateTest.cpp MRUListTest.cpp TransportTest.cpp)
+  ValidateTest.cpp MRUListTest.cpp)
+
+# TransportTest uses Linux-only transport plugin infrastructure
+# (pws_get_cache_path, pws_transport_unload are not compiled on Windows/macOS)
+if (${CMAKE_SYSTEM_NAME} MATCHES "(Linux|FreeBSD|OpenBSD)")
+  list (APPEND TEST_SRCS TransportTest.cpp)
+endif()
 
 if (WIN32)
   list (APPEND TEST_SRCS ../core/core.rc2)

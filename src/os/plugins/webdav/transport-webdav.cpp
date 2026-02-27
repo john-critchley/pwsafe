@@ -35,9 +35,13 @@
 #include <map>
 #include <string>
 
-/* Embedded identity string — handles both http and https */
-static const char pws_transport_info[] =
-    "PWS_TRANSPORT_INFO:1:https,http:WebDAV transport";
+/*
+ * Embedded identity string in the ELF .comment section.
+ * See transport-file.cpp for the rationale; same fix applies here.
+ */
+__asm__(".pushsection .comment\n"
+        ".string \"PWS_TRANSPORT_INFO:1:https,http:WebDAV transport\"\n"
+        ".popsection\n");
 
 /*
  * Internal lock-token store.

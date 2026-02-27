@@ -28,9 +28,17 @@
 #include <string>
 #include <sys/stat.h>
 
-/* Embedded identity string — primary scheme is "file" */
-static const char pws_transport_info[] =
-    "PWS_TRANSPORT_INFO:1:file:Local file transport (testing)";
+/*
+ * Embedded identity string in the ELF .comment section.
+ *
+ * A plain `static const char[]` is eliminated by the Release-mode optimiser
+ * (dead variable with no references).  Injecting via inline assembler into
+ * .comment guarantees survival at -O2/-O3 and is still found by
+ * so_claims_scheme()'s memmem() scan of the raw .so file bytes.
+ */
+__asm__(".pushsection .comment\n"
+        ".string \"PWS_TRANSPORT_INFO:1:file:Local file transport (testing)\"\n"
+        ".popsection\n");
 
 namespace fs = std::filesystem;
 
