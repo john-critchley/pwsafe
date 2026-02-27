@@ -34,10 +34,26 @@
  * If the parent crashes (signal, abort, SIGKILL):
  *   Child detects EOF on the socket and unlocks all held locks.
  *
- * Protocol (newline-terminated ASCII)
- * ------------------------------------
- *   Parent → Child:  "LOCK <url>\n"    "UNLOCK <url>\n"    "QUIT\n"
- *   Child  → Parent: "OK\n"            "ERR <errno>\n"
+ * Protocol (binary, length-prefixed — NOT text / delimiter-split)
+ * ---------------------------------------------------------------
+ * A text protocol that splits on delimiters ('\n', ' ') is inherently
+ * vulnerable to injection: a URL containing the delimiter character injects
+ * extra commands.  Sanitising the input is a band-aid.  This protocol uses
+ * explicit length-prefixed binary frames so that a URL can contain any byte
+ * value without affecting framing — analogous to execve(argv[]) vs system().
+ *
+ * Parent → Child frame:
+ *   [uint8_t  opcode]                         — CMD_LOCK / UNLOCK / STORE / QUIT
+ *   [uint32_t url_len]  (little-endian)        — byte length of url field
+ *   [uint8_t  url[url_len]]                    — URL, any bytes allowed
+ *   For CMD_STORE only:
+ *   [uint32_t path_len] (little-endian)
+ *   [uint8_t  path[path_len]]
+ *   CMD_QUIT has no payload beyond the opcode byte.
+ *
+ * Child → Parent response (fixed 5 bytes):
+ *   [uint8_t  status]   — 0 = OK, 1 = ERR
+ *   [uint32_t errcode]  (little-endian) — errno value (0 if OK)
  *
  * Thread safety
  * -------------
@@ -56,16 +72,87 @@
 #include <cassert>
 #include <cerrno>
 #include <csignal>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
 #include <string>
 
+/* ---- opcodes ---- */
+static constexpr uint8_t CMD_LOCK   = 0x01;
+static constexpr uint8_t CMD_UNLOCK = 0x02;
+static constexpr uint8_t CMD_STORE  = 0x03;
+static constexpr uint8_t CMD_QUIT   = 0x04;
+
 /* ---- parent-side globals ---- */
 
 static int   s_sock = -1;   /* socketpair fd, parent side */
 static pid_t s_pid  = -1;   /* child PID */
+
+/* ============================================================
+ * Low-level I/O helpers (used by both parent and child)
+ * ============================================================ */
+
+/** Write exactly len bytes; handles short writes.  Returns true on success. */
+static bool send_all(int fd, const void *buf, size_t len)
+{
+  const char *p = static_cast<const char *>(buf);
+  while (len > 0) {
+    ssize_t n = write(fd, p, len);
+    if (n <= 0)
+      return false;
+    p   += n;
+    len -= static_cast<size_t>(n);
+  }
+  return true;
+}
+
+/** Read exactly len bytes; handles short reads.  Returns true on success. */
+static bool recv_all(int fd, void *buf, size_t len)
+{
+  char *p = static_cast<char *>(buf);
+  while (len > 0) {
+    ssize_t n = read(fd, p, len);
+    if (n <= 0)
+      return false;
+    p   += n;
+    len -= static_cast<size_t>(n);
+  }
+  return true;
+}
+
+/** Read a length-prefixed string from fd into str.  Returns true on success. */
+static bool recv_string(int fd, std::string &str)
+{
+  uint32_t len;
+  if (!recv_all(fd, &len, sizeof(len)))
+    return false;
+  str.assign(len, '\0');
+  return len == 0 || recv_all(fd, &str[0], len);
+}
+
+/** Send a fixed 5-byte response to the parent. */
+static void send_response(int fd, int errcode)
+{
+  uint8_t  status = (errcode == 0) ? 0 : 1;
+  uint32_t code   = static_cast<uint32_t>(errcode);
+  send_all(fd, &status, 1);
+  send_all(fd, &code, 4);
+}
+
+/**
+ * Read one response from the child.
+ * Returns 0 on OK, the errno value on ERR, or EIO on read failure.
+ */
+static int recv_response(int fd)
+{
+  uint8_t  status;
+  uint32_t code;
+  if (!recv_all(fd, &status, 1) || !recv_all(fd, &code, 4))
+    return EIO;
+  return (status == 0) ? 0 : static_cast<int>(code);
+}
 
 /* ============================================================
  * Child process
@@ -95,77 +182,61 @@ static void lockd_child_main(int sock)
 
   std::map<std::string, bool> held;  /* url → true while we hold the lock */
 
-  std::string pending;   /* incomplete line buffer */
-  char tmp[4096];
-
   for (;;) {
-    ssize_t n = read(sock, tmp, sizeof(tmp));
-    if (n <= 0) {
+    uint8_t opcode;
+    if (!recv_all(sock, &opcode, 1)) {
       /* EOF: parent exited or crashed — release everything */
       child_unlock_all(sock, held);
       _exit(0);
     }
 
-    pending.append(tmp, static_cast<size_t>(n));
+    /* --- QUIT --- */
+    if (opcode == CMD_QUIT) {
+      child_unlock_all(sock, held);
+      send_response(sock, 0);
+      close(sock);
+      _exit(0);
+    }
 
-    size_t nl;
-    while ((nl = pending.find('\n')) != std::string::npos) {
-      std::string line = pending.substr(0, nl);
-      pending.erase(0, nl + 1);
+    /* All other commands carry a URL */
+    std::string url;
+    if (!recv_string(sock, url)) {
+      child_unlock_all(sock, held);
+      _exit(1);
+    }
 
+    if (opcode == CMD_LOCK) {
       /* --- LOCK <url> --- */
-      if (line.size() > 5 && line.substr(0, 5) == "LOCK ") {
-        std::string url = line.substr(5);
-        const PWSTransport *t = pws_find_transport(url);
-        int rc = t ? t->lock(url.c_str(), nullptr, 0) : ENOENT;
-        if (rc == 0)
-          held[url] = true;
-        char resp[32];
-        if (rc == 0)
-          snprintf(resp, sizeof(resp), "OK\n");
-        else
-          snprintf(resp, sizeof(resp), "ERR %d\n", rc);
-        write(sock, resp, strlen(resp));
+      const PWSTransport *t = pws_find_transport(url);
+      int rc = t ? t->lock(url.c_str(), nullptr, 0) : ENOENT;
+      if (rc == 0)
+        held[url] = true;
+      send_response(sock, rc);
 
+    } else if (opcode == CMD_UNLOCK) {
       /* --- UNLOCK <url> --- */
-      } else if (line.size() > 7 && line.substr(0, 7) == "UNLOCK ") {
-        std::string url = line.substr(7);
-        if (held.count(url)) {
-          const PWSTransport *t = pws_find_transport(url);
-          if (t) t->unlock(url.c_str(), "");
-          held.erase(url);
-        }
-        write(sock, "OK\n", 3);
-
-      /* --- STORE <url> <local_path> ---
-       * The child holds the lock token in its s_lock_tokens copy, so calling
-       * t->store() here includes the required If: (<token>) header.
-       * URLs never contain spaces; local_path is everything after the first space. */
-      } else if (line.size() > 6 && line.substr(0, 6) == "STORE ") {
-        std::string rest = line.substr(6);
-        size_t sp = rest.find(' ');
-        if (sp == std::string::npos) {
-          write(sock, "ERR 22\n", 7);   /* EINVAL */
-        } else {
-          std::string url        = rest.substr(0, sp);
-          std::string local_path = rest.substr(sp + 1);
-          const PWSTransport *t = pws_find_transport(url);
-          int rc = t ? t->store(local_path.c_str(), url.c_str()) : ENOENT;
-          char resp[32];
-          if (rc == 0)
-            snprintf(resp, sizeof(resp), "OK\n");
-          else
-            snprintf(resp, sizeof(resp), "ERR %d\n", rc);
-          write(sock, resp, strlen(resp));
-        }
-
-      /* --- QUIT --- */
-      } else if (line == "QUIT") {
-        child_unlock_all(sock, held);
-        write(sock, "OK\n", 3);
-        close(sock);
-        _exit(0);
+      if (held.count(url)) {
+        const PWSTransport *t = pws_find_transport(url);
+        if (t) t->unlock(url.c_str(), "");
+        held.erase(url);
       }
+      send_response(sock, 0);
+
+    } else if (opcode == CMD_STORE) {
+      /* --- STORE <url> <local_path> --- */
+      std::string local_path;
+      if (!recv_string(sock, local_path)) {
+        child_unlock_all(sock, held);
+        _exit(1);
+      }
+      const PWSTransport *t = pws_find_transport(url);
+      int rc = t ? t->store(local_path.c_str(), url.c_str()) : ENOENT;
+      send_response(sock, rc);
+
+    } else {
+      /* Unknown opcode — protocol error, bail out safely */
+      child_unlock_all(sock, held);
+      _exit(1);
     }
   }
 }
@@ -218,22 +289,16 @@ static bool lockd_start()
   return true;
 }
 
-/** Read one response line (up to '\n') into buf; strips the newline. */
-static bool lockd_recv(char *buf, size_t bufsz)
+/**
+ * Send a length-prefixed string field to the child.
+ * url_len is sent as a uint32_t (LE), followed by the url bytes.
+ * Suitable for async-signal-safe use when url is already in a C string
+ * (no heap allocation; only write() calls which are signal-safe).
+ */
+static bool parent_send_string(int fd, const char *s, size_t slen)
 {
-  for (size_t i = 0; i < bufsz - 1; ++i) {
-    ssize_t n = read(s_sock, &buf[i], 1);
-    if (n <= 0) {
-      buf[i] = '\0';
-      return false;
-    }
-    if (buf[i] == '\n') {
-      buf[i] = '\0';
-      return true;
-    }
-  }
-  buf[bufsz - 1] = '\0';
-  return true;
+  uint32_t len = static_cast<uint32_t>(slen);
+  return send_all(fd, &len, 4) && (slen == 0 || send_all(fd, s, slen));
 }
 
 /* ============================================================
@@ -250,19 +315,11 @@ int pws_lockd_acquire(const std::string &url)
     return t->lock(url.c_str(), nullptr, 0);
   }
 
-  std::string cmd = "LOCK " + url + "\n";
-  if (write(s_sock, cmd.c_str(), cmd.size()) < 0)
+  if (!send_all(s_sock, &CMD_LOCK, 1) ||
+      !parent_send_string(s_sock, url.c_str(), url.size()))
     return EIO;
 
-  char resp[64];
-  if (!lockd_recv(resp, sizeof(resp)))
-    return EIO;
-
-  if (strcmp(resp, "OK") == 0)
-    return 0;
-  if (strncmp(resp, "ERR ", 4) == 0)
-    return atoi(resp + 4);
-  return EIO;
+  return recv_response(s_sock);
 }
 
 void pws_lockd_release(const std::string &url)
@@ -274,14 +331,19 @@ void pws_lockd_release(const std::string &url)
     return;
   }
 
-  std::string cmd = "UNLOCK " + url + "\n";
+  /* Build the frame on the stack — no heap allocation, so this path is
+   * async-signal-safe (write(2) is signal-safe; we avoid std::string ops). */
+  const char *u    = url.c_str();   /* signal-safe: just a pointer read */
+  size_t      ulen = url.size();    /* signal-safe: just a size_t read */
+  if (ulen > 65535)
+    return;   /* unreasonably long URL — fail safe */
+
   /* write() is async-signal-safe — safe to call from signal handlers */
-  if (write(s_sock, cmd.c_str(), cmd.size()) < 0)
-    return;
+  send_all(s_sock, &CMD_UNLOCK, 1);
+  parent_send_string(s_sock, u, ulen);
 
   /* read() is also async-signal-safe */
-  char resp[64];
-  lockd_recv(resp, sizeof(resp));
+  recv_response(s_sock);
 }
 
 /*
@@ -304,20 +366,12 @@ int pws_lockd_store(const std::string &local_path, const std::string &url)
     return t ? t->store(local_path.c_str(), url.c_str()) : ENOENT;
   }
 
-  /* "STORE <url> <local_path>\n" — URL first so the space split is unambiguous */
-  std::string cmd = "STORE " + url + " " + local_path + "\n";
-  if (write(s_sock, cmd.c_str(), cmd.size()) < 0)
+  if (!send_all(s_sock, &CMD_STORE, 1) ||
+      !parent_send_string(s_sock, url.c_str(), url.size()) ||
+      !parent_send_string(s_sock, local_path.c_str(), local_path.size()))
     return EIO;
 
-  char resp[64];
-  if (!lockd_recv(resp, sizeof(resp)))
-    return EIO;
-
-  if (strcmp(resp, "OK") == 0)
-    return 0;
-  if (strncmp(resp, "ERR ", 4) == 0)
-    return atoi(resp + 4);
-  return EIO;
+  return recv_response(s_sock);
 }
 
 void pws_lockd_shutdown()
@@ -325,10 +379,9 @@ void pws_lockd_shutdown()
   if (s_sock < 0)
     return;
 
-  char resp[64];
   /* Ask the child to unlock everything and exit cleanly */
-  if (write(s_sock, "QUIT\n", 5) == 5)
-    lockd_recv(resp, sizeof(resp));
+  if (send_all(s_sock, &CMD_QUIT, 1))
+    recv_response(s_sock);
 
   close(s_sock);
   s_sock = -1;

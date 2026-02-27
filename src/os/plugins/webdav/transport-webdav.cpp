@@ -95,9 +95,25 @@ static CURL *make_curl(const char *url)
 
   curl_easy_setopt(c, CURLOPT_URL, url);
   curl_easy_setopt(c, CURLOPT_NETRC, CURL_NETRC_OPTIONAL);
-  curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
   curl_easy_setopt(c, CURLOPT_FAILONERROR, 1L);   /* treat 4xx/5xx as errors */
   curl_easy_setopt(c, CURLOPT_USERAGENT, "pwsafe-webdav/1.0");
+
+  /* Restrict protocols to http and https only.  Without this a malicious
+   * server could redirect a GET or PUT to file://, ftp://, etc., exposing
+   * local files or writing to unintended destinations.
+   * Requires libcurl >= 7.85.0. */
+  curl_easy_setopt(c, CURLOPT_PROTOCOLS_STR,       "https,http");
+  curl_easy_setopt(c, CURLOPT_REDIR_PROTOCOLS_STR, "https,http");
+
+  /* Disable redirects by default.  libcurl follows PUT redirects which
+   * could send the database to an attacker-controlled server.  Each
+   * individual fetch/store/lock function enables redirects only if safe. */
+  curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 0L);
+
+  /* Enforce TLS certificate verification (libcurl defaults to on, but
+   * be explicit so a misconfigured build cannot silently disable it). */
+  curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 1L);
+  curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 2L);
 
   /* Reasonable timeouts */
   curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 15L);
@@ -327,8 +343,15 @@ static size_t lock_header_cb(char *buf, size_t size, size_t nmemb, void *ud)
 static size_t lock_write_cb(char *ptr, size_t size, size_t nmemb, void *ud)
 {
   auto *ctx = static_cast<LockTokenCtx *>(ud);
-  ctx->body.append(ptr, size * nmemb);
-  return size * nmemb;
+  /* Limit response body to 64 KB.  A LOCK XML response is typically < 1 KB;
+   * a larger reply almost certainly indicates a misbehaving or malicious
+   * server.  Returning 0 aborts the transfer with a curl error. */
+  constexpr size_t MAX_BODY = 65536;
+  size_t chunk = size * nmemb;
+  if (ctx->body.size() + chunk > MAX_BODY)
+    return 0;
+  ctx->body.append(ptr, chunk);
+  return chunk;
 }
 
 static int webdav_lock(const char *url, char *token_out, size_t token_len)

@@ -56,7 +56,16 @@ static std::string extract_scheme(const std::string &url)
   /* No colon → not a URL; fewer than 2 chars before colon → Windows drive letter ("C:") */
   if (pos == std::string::npos || pos < 2)
     return "";
-  return url.substr(0, pos);
+  std::string scheme = url.substr(0, pos);
+  /* Validate scheme characters per RFC 3986 §3.1:
+   *   scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
+   * Reject anything else (e.g. '/', '..') to prevent path-traversal in the
+   * plugin filename constructed as "pwsafe-<scheme>.so". */
+  for (char c : scheme) {
+    if (!isalnum(static_cast<unsigned char>(c)) && c != '+' && c != '-' && c != '.')
+      return "";
+  }
+  return scheme;
 }
 
 static std::string get_app_dir()
@@ -99,15 +108,15 @@ static std::string url_to_filename(const std::string &url)
 }
 
 /**
- * Scan the raw bytes of a .so for the PWS_TRANSPORT_INFO: magic string
- * and check whether it claims to handle the given scheme.
+ * Scan the raw bytes of an already-open .so fd for the PWS_TRANSPORT_INFO:
+ * magic string and check whether it claims to handle the given scheme.
+ *
+ * Takes an open O_RDONLY fd so the caller can open the file once and pass
+ * the same fd to both the identity check and dlopen(), eliminating the
+ * TOCTOU race that would exist if we opened by path twice.
  */
-static bool so_claims_scheme(const std::string &path, const std::string &scheme)
+static bool so_claims_scheme_fd(int fd, const std::string &scheme)
 {
-  int fd = open(path.c_str(), O_RDONLY);
-  if (fd < 0)
-    return false;
-
   struct stat st;
   bool result = false;
 
@@ -145,16 +154,23 @@ static bool so_claims_scheme(const std::string &path, const std::string &scheme)
       munmap(mem, static_cast<size_t>(st.st_size));
     }
   }
-  close(fd);
   return result;
 }
 
 /**
- * Find the plugin file for the given scheme.
+ * Find and open the plugin file for the given scheme.
+ * Returns an open O_RDONLY | O_CLOEXEC | O_NOFOLLOW fd on success, -1 on failure.
+ *
+ * O_NOFOLLOW prevents a symlink substitution attack at the plugin path.
+ * Returning an fd (rather than a path) eliminates the TOCTOU race between
+ * find and use: the caller passes this same fd to so_claims_scheme_fd() and
+ * then to dlopen() via /proc/self/fd/<n>, so only one kernel file object
+ * is ever referenced.
+ *
  * Tries: <app_dir>/pwsafe-<scheme>.so
  *        <cwd>/pwsafe-<scheme>.so  (DEVELOPMENT builds only)
  */
-static std::string find_plugin_path(const std::string &scheme)
+static int open_plugin_fd(const std::string &scheme)
 {
   const std::string filename = "pwsafe-" + scheme + ".so";
 
@@ -165,10 +181,11 @@ static std::string find_plugin_path(const std::string &scheme)
 
   for (const auto &dir : dirs) {
     std::string path = dir + "/" + filename;
-    if (access(path.c_str(), R_OK) == 0)
-      return path;
+    int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd >= 0)
+      return fd;
   }
-  return "";
+  return -1;
 }
 
 /* ---- public API ---- */
@@ -189,19 +206,25 @@ const PWSTransport *pws_find_transport(const std::string &url)
   if (it != s_transports.end())
     return it->second;
 
-  /* Find the plugin file */
-  std::string path = find_plugin_path(scheme);
-  if (path.empty()) {
+  /* Open the plugin file once with O_NOFOLLOW to prevent symlink attacks.
+   * We use the same fd for the identity check (mmap) and for dlopen via
+   * /proc/self/fd/<n>, ensuring no TOCTOU race between check and load. */
+  int plugin_fd = open_plugin_fd(scheme);
+  if (plugin_fd < 0) {
     return nullptr;   /* caller shows "plugin not found" dialog */
   }
 
   /* Verify identity string before dlopen */
-  if (!so_claims_scheme(path, scheme)) {
+  if (!so_claims_scheme_fd(plugin_fd, scheme)) {
+    close(plugin_fd);
     return nullptr;   /* wrong plugin or renamed file */
   }
 
-  /* Load it */
-  void *handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+  /* Load via /proc/self/fd/<n> so dlopen references the same inode we verified */
+  char fdpath[64];
+  snprintf(fdpath, sizeof(fdpath), "/proc/self/fd/%d", plugin_fd);
+  void *handle = dlopen(fdpath, RTLD_NOW | RTLD_LOCAL);
+  close(plugin_fd);   /* dlopen has its own reference; we can close ours */
   if (!handle)
     return nullptr;
 
@@ -243,9 +266,13 @@ const PWSTransport *pws_find_transport(const std::string &url)
 std::string pws_get_cache_path(const std::string &url)
 {
   std::string dir = get_cache_dir();
-  /* Create cache dir if it doesn't exist */
+  /* Create cache dir if it doesn't exist, then enforce 0700.
+   * create_directories() inherits the process umask (often 0022 → 0755),
+   * making the cached database copy readable by other local users.
+   * A password manager must keep it private. */
   std::error_code ec;
   fs::create_directories(dir, ec);
+  chmod(dir.c_str(), 0700);   /* ignore error: best-effort; open() will fail below if wrong */
   return dir + "/" + url_to_filename(url);
 }
 
