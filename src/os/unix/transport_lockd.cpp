@@ -268,7 +268,7 @@ static void lockd_child_main(int sock)
 static bool lockd_start()
 {
   int sv[2];
-  if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0)
+  if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) != 0)
     return false;
 
   pid_t pid = fork();
@@ -355,8 +355,8 @@ void pws_lockd_release(const std::string &url)
    * async-signal-safe (write(2) is signal-safe; we avoid std::string ops). */
   const char *u    = url.c_str();   /* signal-safe: just a pointer read */
   size_t      ulen = url.size();    /* signal-safe: just a size_t read */
-  if (ulen > 65535)
-    return;   /* unreasonably long URL — fail safe */
+  if (ulen > MAX_IPC_URL)
+    return;   /* child would reject this; don't bother sending */
 
   /* write() is async-signal-safe — safe to call from signal handlers */
   send_all(s_sock, &CMD_UNLOCK, 1);

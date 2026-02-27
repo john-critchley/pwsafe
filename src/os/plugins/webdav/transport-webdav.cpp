@@ -290,11 +290,9 @@ static size_t header_cb(char *buf, size_t size, size_t nmemb, void *userdata)
 {
   auto *ctx = static_cast<HeaderCtx *>(userdata);
   std::string line(buf, size * nmemb);
-  /* DAV: 1, 2  or  DAV: 1,2  — look for "2" after "DAV:" */
-  if (line.size() > 4 &&
-      (line[0] == 'D' || line[0] == 'd') &&
-      line.substr(0, 4) == "DAV:")
-  {
+  /* DAV: 1, 2  or  DAV: 1,2  — look for "2" after "DAV:"
+   * HTTP headers are case-insensitive (RFC 7230 §3.2). */
+  if (line.size() > 4 && strncasecmp(line.c_str(), "DAV:", 4) == 0) {
     if (line.find('2') != std::string::npos)
       ctx->dav2 = true;
   }
