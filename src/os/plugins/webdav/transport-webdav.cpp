@@ -27,6 +27,9 @@
 
 #include <curl/curl.h>
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <cassert>
 #include <cerrno>
 #include <cstdio>
@@ -154,9 +157,18 @@ static int curl_to_errno(CURL *c, CURLcode rc)
 
 static int webdav_fetch(const char *url, const char *local_path)
 {
-  FILE *fp = fopen(local_path, "wb");
-  if (!fp)
+  /* Create cache file with 0600 permissions so other local users cannot
+   * read the encrypted database.  Using open(O_CLOEXEC) + fdopen() rather
+   * than fopen() ensures the mode is enforced regardless of the process umask. */
+  int raw_fd = open(local_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+  if (raw_fd < 0)
     return errno;
+  FILE *fp = fdopen(raw_fd, "wb");
+  if (!fp) {
+    int e = errno;
+    close(raw_fd);
+    return e;
+  }
 
   CURL *c = make_curl(url);
   if (!c) {
@@ -194,8 +206,15 @@ static int webdav_store(const char *local_path, const char *url)
     return errno;
 
   /* Get file size for Content-Length */
-  fseek(fp, 0, SEEK_END);
+  if (fseek(fp, 0, SEEK_END) != 0) {
+    fclose(fp);
+    return EIO;
+  }
   long fsize = ftell(fp);
+  if (fsize < 0) {
+    fclose(fp);
+    return EIO;
+  }
   rewind(fp);
 
   CURL *c = make_curl(url);
@@ -208,7 +227,7 @@ static int webdav_store(const char *local_path, const char *url)
   curl_easy_setopt(c, CURLOPT_UPLOAD, 1L);
   curl_easy_setopt(c, CURLOPT_READFUNCTION, read_cb);
   curl_easy_setopt(c, CURLOPT_READDATA, &ctx);
-  curl_easy_setopt(c, CURLOPT_INFILESIZE, fsize);
+  curl_easy_setopt(c, CURLOPT_INFILESIZE_LARGE, (curl_off_t)fsize);
   /* Discard response body (e.g. "201 Created" HTML from Apache) */
   curl_easy_setopt(c, CURLOPT_WRITEFUNCTION,
                    +[](char *, size_t s, size_t n, void *) -> size_t { return s * n; });
@@ -284,12 +303,12 @@ static size_t header_cb(char *buf, size_t size, size_t nmemb, void *userdata)
 
 static bool server_supports_locking(const char *url)
 {
-  CURL *c = curl_easy_init();
+  /* Use make_curl() so OPTIONS gets the same protocol restrictions, TLS
+   * verification settings, and timeouts as all other requests. */
+  CURL *c = make_curl(url);
   if (!c)
     return false;
 
-  curl_easy_setopt(c, CURLOPT_URL, url);
-  curl_easy_setopt(c, CURLOPT_NETRC, CURL_NETRC_OPTIONAL);
   curl_easy_setopt(c, CURLOPT_CUSTOMREQUEST, "OPTIONS");
   curl_easy_setopt(c, CURLOPT_NOBODY, 1L);
 
@@ -325,12 +344,13 @@ static size_t lock_header_cb(char *buf, size_t size, size_t nmemb, void *ud)
 {
   auto *ctx = static_cast<LockTokenCtx *>(ud);
   std::string line(buf, size * nmemb);
-  /* Lock-Token: <opaquelocktoken:...> */
-  const std::string prefix = "Lock-Token:";
-  if (line.size() > prefix.size() &&
-      line.substr(0, prefix.size()) == prefix)
+  /* Lock-Token: <opaquelocktoken:...>
+   * HTTP headers are case-insensitive (RFC 7230 §3.2); compare with strncasecmp. */
+  const char prefix[] = "Lock-Token:";
+  if (line.size() > sizeof(prefix) - 1 &&
+      strncasecmp(line.c_str(), prefix, sizeof(prefix) - 1) == 0)
   {
-    std::string val = line.substr(prefix.size());
+    std::string val = line.substr(sizeof(prefix) - 1);
     /* strip leading/trailing whitespace and angle brackets */
     size_t start = val.find('<');
     size_t end   = val.rfind('>');
@@ -408,19 +428,12 @@ static int webdav_lock(const char *url, char *token_out, size_t token_len)
  * unlock — WebDAV UNLOCK
  * -------------------------------------------------------------------------- */
 
-static int webdav_unlock(const char *url, const char *token)
+static int webdav_unlock(const char *url, const char * /*token*/)
 {
-  /* The caller (UnlockFile in file.cpp) passes "" for the token because it
-   * doesn't have access to the token obtained at lock time.  Look it up from
-   * our internal map instead. */
+  /* Look up the token from our internal map; the caller (UnlockFile in
+   * file.cpp) always passes "" because it never sees the token. */
   auto it = s_lock_tokens.find(url);
-  const std::string *active_token = nullptr;
-  if (it != s_lock_tokens.end())
-    active_token = &it->second;
-  else if (token && *token)
-    active_token = nullptr; /* fallback: shouldn't happen in practice */
-
-  if (!active_token) {
+  if (it == s_lock_tokens.end()) {
     /* Nothing to unlock (may have been locked with ENOTSUP, or already unlocked) */
     return 0;
   }
@@ -429,7 +442,7 @@ static int webdav_unlock(const char *url, const char *token)
   if (!c)
     return ENOMEM;
 
-  std::string lock_token_hdr = std::string("Lock-Token: <") + *active_token + ">";
+  std::string lock_token_hdr = std::string("Lock-Token: <") + it->second + ">";
   struct curl_slist *hdrs = nullptr;
   hdrs = curl_slist_append(hdrs, lock_token_hdr.c_str());
 

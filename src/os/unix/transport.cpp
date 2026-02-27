@@ -120,7 +120,7 @@ static bool so_claims_scheme_fd(int fd, const std::string &scheme)
   struct stat st;
   bool result = false;
 
-  if (fstat(fd, &st) == 0 && st.st_size > 0) {
+  if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0) {
     void *mem = mmap(nullptr, static_cast<size_t>(st.st_size),
                      PROT_READ, MAP_PRIVATE, fd, 0);
     if (mem != MAP_FAILED) {

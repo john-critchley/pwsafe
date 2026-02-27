@@ -94,13 +94,18 @@ static pid_t s_pid  = -1;   /* child PID */
  * Low-level I/O helpers (used by both parent and child)
  * ============================================================ */
 
-/** Write exactly len bytes; handles short writes.  Returns true on success. */
+/** Write exactly len bytes; handles short writes and EINTR.  Returns true on success. */
 static bool send_all(int fd, const void *buf, size_t len)
 {
   const char *p = static_cast<const char *>(buf);
   while (len > 0) {
     ssize_t n = write(fd, p, len);
-    if (n <= 0)
+    if (n < 0) {
+      if (errno == EINTR)
+        continue;
+      return false;
+    }
+    if (n == 0)
       return false;
     p   += n;
     len -= static_cast<size_t>(n);
@@ -108,13 +113,18 @@ static bool send_all(int fd, const void *buf, size_t len)
   return true;
 }
 
-/** Read exactly len bytes; handles short reads.  Returns true on success. */
+/** Read exactly len bytes; handles short reads and EINTR.  Returns true on success. */
 static bool recv_all(int fd, void *buf, size_t len)
 {
   char *p = static_cast<char *>(buf);
   while (len > 0) {
     ssize_t n = read(fd, p, len);
-    if (n <= 0)
+    if (n < 0) {
+      if (errno == EINTR)
+        continue;
+      return false;
+    }
+    if (n == 0)
       return false;
     p   += n;
     len -= static_cast<size_t>(n);
@@ -122,12 +132,22 @@ static bool recv_all(int fd, void *buf, size_t len)
   return true;
 }
 
+/* Maximum field sizes for IPC protocol validation.
+ * A URL longer than 8 KB is unreasonable; a local path longer than 4 KB
+ * would exceed PATH_MAX on every known system.  Enforce these limits in the
+ * child to prevent a corrupted or malicious frame from causing gigabyte
+ * allocations. */
+static constexpr uint32_t MAX_IPC_URL  = 8192;
+static constexpr uint32_t MAX_IPC_PATH = 4096;
+
 /** Read a length-prefixed string from fd into str.  Returns true on success. */
-static bool recv_string(int fd, std::string &str)
+static bool recv_string(int fd, std::string &str, uint32_t max_len = MAX_IPC_URL)
 {
   uint32_t len;
   if (!recv_all(fd, &len, sizeof(len)))
     return false;
+  if (len > max_len)
+    return false;   /* reject oversized field — protocol error or DoS attempt */
   str.assign(len, '\0');
   return len == 0 || recv_all(fd, &str[0], len);
 }
@@ -225,7 +245,7 @@ static void lockd_child_main(int sock)
     } else if (opcode == CMD_STORE) {
       /* --- STORE <url> <local_path> --- */
       std::string local_path;
-      if (!recv_string(sock, local_path)) {
+      if (!recv_string(sock, local_path, MAX_IPC_PATH)) {
         child_unlock_all(sock, held);
         _exit(1);
       }
