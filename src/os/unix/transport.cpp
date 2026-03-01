@@ -31,13 +31,10 @@
 
 #include <cassert>
 #include <cstring>
-#include <filesystem>
 #include <map>
 #include <set>
 #include <string>
 #include <vector>
-
-namespace fs = std::filesystem;
 
 /* ---- internal state ---- */
 
@@ -298,12 +295,15 @@ const PWSTransport *pws_find_transport(const std::string &url)
 std::string pws_get_cache_path(const std::string &url)
 {
   std::string dir = get_cache_dir();
-  /* Create cache dir if it doesn't exist, then enforce 0700.
-   * create_directories() inherits the process umask (often 0022 → 0755),
-   * making the cached database copy readable by other local users.
-   * A password manager must keep it private. */
-  std::error_code ec;
-  fs::create_directories(dir, ec);
+  /* Create cache dir (and parents) if they don't exist, then enforce 0700.
+   * We use a manual mkdir loop rather than std::filesystem::create_directories
+   * because std::filesystem is unavailable on macOS < 10.15 (we target 10.14).
+   * The umask would open intermediate dirs to 0755, but the password manager
+   * cache must be private; chmod() below locks down the leaf directory. */
+  for (size_t i = 1; i <= dir.size(); ++i) {
+    if (i == dir.size() || dir[i] == '/')
+      mkdir(dir.substr(0, i).c_str(), 0777); /* EEXIST is fine; chmod fixes perms */
+  }
   chmod(dir.c_str(), 0700);   /* ignore error: best-effort; open() will fail below if wrong */
   return dir + "/" + url_to_filename(url);
 }
