@@ -178,7 +178,7 @@ static int recv_response(int fd)
  * Child process
  * ============================================================ */
 
-static void child_unlock_all(int sock, std::map<std::string, bool> &held)
+static void child_unlock_all(int /*sock*/, std::map<std::string, bool> &held)
 {
   for (auto &kv : held) {
     const PWSTransport *t = pws_find_transport(kv.first);
@@ -268,8 +268,16 @@ static void lockd_child_main(int sock)
 static bool lockd_start()
 {
   int sv[2];
+  /* SOCK_CLOEXEC is POSIX but not always exposed by macOS build configs */
+#ifdef SOCK_CLOEXEC
   if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) != 0)
     return false;
+#else
+  if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0)
+    return false;
+  fcntl(sv[0], F_SETFD, FD_CLOEXEC);
+  fcntl(sv[1], F_SETFD, FD_CLOEXEC);
+#endif
 
   pid_t pid = fork();
   if (pid < 0) {
