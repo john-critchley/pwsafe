@@ -64,6 +64,7 @@
 #include "../transport.h"
 
 #include <dirent.h>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/wait.h>
