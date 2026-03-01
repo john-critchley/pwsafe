@@ -29,6 +29,9 @@
 		570781702B0C4D030082EB6E /* YubiMixin.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5707816C2B0C4CED0082EB6E /* YubiMixin.cpp */; };
 		570781742B0C4D330082EB6E /* PWYubi.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 570781692B0C4CD30082EB6E /* PWYubi.cpp */; };
 		572D9E232DC4920900AF81D4 /* StrengthMeter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 572D9E222DC4920900AF81D4 /* StrengthMeter.cpp */; };
+		5ABCDEF32DC4920900AF81D0 /* OpenUrlDlg.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5ABCDEF22DC4920900AF81D0 /* OpenUrlDlg.cpp */; };
+		5ABCDEF52DC4920900AF81D0 /* transport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5ABCDEF42DC4920900AF81D0 /* transport.cpp */; };
+		5ABCDEF72DC4920900AF81D0 /* transport_lockd.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5ABCDEF62DC4920900AF81D0 /* transport_lockd.cpp */; };
 		5762BC192DE7E26800322CA5 /* libcore.a in Frameworks */ = {isa = PBXBuildFile; fileRef = E6ADB80311956A93004E2BE5 /* libcore.a */; };
 		5762BC1B2DE7E26800322CA5 /* AppKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D3A7B67C254824C000E780B8 /* AppKit.framework */; };
 		5762BC1C2DE7E26800322CA5 /* libos.a in Frameworks */ = {isa = PBXBuildFile; fileRef = E6ADB91C11956DD0004E2BE5 /* libos.a */; };
@@ -380,6 +383,10 @@
 		572D9E202DC4920900AF81D4 /* StatusBar.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = StatusBar.h; sourceTree = "<group>"; };
 		572D9E212DC4920900AF81D4 /* StrengthMeter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = StrengthMeter.h; sourceTree = "<group>"; };
 		572D9E222DC4920900AF81D4 /* StrengthMeter.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = StrengthMeter.cpp; sourceTree = "<group>"; };
+		5ABCDEF12DC4920900AF81D0 /* OpenUrlDlg.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OpenUrlDlg.h; sourceTree = "<group>"; };
+		5ABCDEF22DC4920900AF81D0 /* OpenUrlDlg.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = OpenUrlDlg.cpp; sourceTree = "<group>"; };
+		5ABCDEF42DC4920900AF81D0 /* transport.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = transport.cpp; sourceTree = "<group>"; };
+		5ABCDEF62DC4920900AF81D0 /* transport_lockd.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = transport_lockd.cpp; sourceTree = "<group>"; };
 		574370962A3CE21800B46A7D /* pwsafe-template.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "pwsafe-template.plist"; sourceTree = "<group>"; };
 		575412A92B14265800507BC5 /* ubuntu-latest.yml */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.yaml; name = "ubuntu-latest.yml"; path = "../.github/workflows/ubuntu-latest.yml"; sourceTree = "<group>"; };
 		575412AA2B14265800507BC5 /* macos-latest.yml */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.yaml; name = "macos-latest.yml"; path = "../.github/workflows/macos-latest.yml"; sourceTree = "<group>"; };
@@ -1606,6 +1613,7 @@
 				E6F8DC1E1D132618007DFBEC /* MenuViewHandlers.cpp */,
 				E61D6FA112617EFC0049FA2A /* MergeDlg.cpp */,
 				E69B7FA611F600BA0084F6C4 /* OpenFilePickerValidator.cpp */,
+				5ABCDEF22DC4920900AF81D0 /* OpenUrlDlg.cpp */,
 				E6ADB9B211957099004E2BE5 /* OptionsPropertySheetDlg.cpp */,
 				E66C16B916731F9400C996B1 /* PasswordPolicyDlg.cpp */,
 				E6ADB9B411957099004E2BE5 /* PasswordSafeFrame.cpp */,
@@ -1680,6 +1688,7 @@
 				E66C16B216731EFE00C996B1 /* ManagePasswordPoliciesDlg.h */,
 				E61D6FA212617EFC0049FA2A /* MergeDlg.h */,
 				E69B7FA711F600BA0084F6C4 /* OpenFilePickerValidator.h */,
+				5ABCDEF12DC4920900AF81D0 /* OpenUrlDlg.h */,
 				E6ADB9B311957099004E2BE5 /* OptionsPropertySheetDlg.h */,
 				E66C16BA16731F9400C996B1 /* PasswordPolicyDlg.h */,
 				E6ADB9B511957099004E2BE5 /* PasswordSafeFrame.h */,
@@ -1737,6 +1746,16 @@
 			tabWidth = 2;
 			usesTabs = 0;
 		};
+		5ABCDEF82DC4920900AF81D0 /* unix */ = {
+			isa = PBXGroup;
+			children = (
+				5ABCDEF42DC4920900AF81D0 /* transport.cpp */,
+				5ABCDEF62DC4920900AF81D0 /* transport_lockd.cpp */,
+			);
+			name = unix;
+			path = ../src/os/unix;
+			sourceTree = SOURCE_ROOT;
+		};
 		E6C1253511E1B2BA00D22D92 /* mac */ = {
 			isa = PBXGroup;
 			children = (
@@ -1769,6 +1788,7 @@
 			isa = PBXGroup;
 			children = (
 				E6C1253511E1B2BA00D22D92 /* mac */,
+				5ABCDEF82DC4920900AF81D0 /* unix */,
 				570781692B0C4CD30082EB6E /* PWYubi.cpp */,
 				570781682B0C4CD30082EB6E /* PWYubi.h */,
 				E6889E011EE4640F0023E376 /* cleanup.cpp */,
@@ -2317,6 +2337,8 @@
 				E6C1255B11E1B35600D22D92 /* macsendstring.cpp in Sources */,
 				E6C6876E137C406300A916C1 /* UUID.cpp in Sources */,
 				E698274014C01ABC0043C243 /* logit.cpp in Sources */,
+				5ABCDEF52DC4920900AF81D0 /* transport.cpp in Sources */,
+				5ABCDEF72DC4920900AF81D0 /* transport_lockd.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -2336,6 +2358,7 @@
 				D396C41E261E07D200B28B87 /* PWFiltersEditor.cpp in Sources */,
 				D36479FE2615B773000CCA4A /* SetFiltersDlg.cpp in Sources */,
 				E6ADBA3D1195709A004E2BE5 /* MenuEditHandlers.cpp in Sources */,
+				5ABCDEF32DC4920900AF81D0 /* OpenUrlDlg.cpp in Sources */,
 				E6ADBA3F1195709A004E2BE5 /* OptionsPropertySheetDlg.cpp in Sources */,
 				E6ADBA401195709A004E2BE5 /* PasswordSafeFrame.cpp in Sources */,
 				E6ADBA411195709A004E2BE5 /* PasswordSafeSearch.cpp in Sources */,

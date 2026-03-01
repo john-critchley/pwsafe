@@ -284,7 +284,12 @@ static bool lockd_start()
 
     /* Close all fds >= 3 except sv[1] to avoid holding parent resources
      * (X11 sockets, wxWidgets pipes, etc.) */
+    /* /proc/self/fd is Linux-only; macOS exposes open fds under /dev/fd */
+#ifdef __APPLE__
+    DIR *dir = opendir("/dev/fd");
+#else
     DIR *dir = opendir("/proc/self/fd");
+#endif
     if (dir) {
       int dfd = dirfd(dir);
       struct dirent *de;

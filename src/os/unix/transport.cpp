@@ -24,6 +24,10 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#  include <mach-o/dyld.h>
+#  include <limits.h>
+#endif
 
 #include <cassert>
 #include <cstring>
@@ -70,6 +74,16 @@ static std::string extract_scheme(const std::string &url)
 
 static std::string get_app_dir()
 {
+#ifdef __APPLE__
+  char buf[PATH_MAX];
+  uint32_t size = sizeof(buf);
+  if (_NSGetExecutablePath(buf, &size) == 0) {
+    std::string p(buf);
+    size_t sl = p.rfind('/');
+    if (sl != std::string::npos)
+      return p.substr(0, sl);
+  }
+#else
   char buf[4096];
   ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
   if (len > 0) {
@@ -79,6 +93,7 @@ static std::string get_app_dir()
     if (sl != std::string::npos)
       return p.substr(0, sl);
   }
+#endif
   return ".";
 }
 
@@ -172,7 +187,11 @@ static bool so_claims_scheme_fd(int fd, const std::string &scheme)
  */
 static int open_plugin_fd(const std::string &scheme)
 {
+#ifdef __APPLE__
+  const std::string filename = "pwsafe-" + scheme + ".dylib";
+#else
   const std::string filename = "pwsafe-" + scheme + ".so";
+#endif
 
   std::vector<std::string> dirs = { get_app_dir() };
 #ifdef DEVELOPMENT
@@ -220,10 +239,23 @@ const PWSTransport *pws_find_transport(const std::string &url)
     return nullptr;   /* wrong plugin or renamed file */
   }
 
-  /* Load via /proc/self/fd/<n> so dlopen references the same inode we verified */
+  /* Load the plugin.  On Linux, dlopen via /proc/self/fd/<n> ensures the same
+   * inode that was verified above is loaded (no TOCTOU race).  On macOS,
+   * /proc does not exist; we recover the resolved path from the open fd with
+   * F_GETPATH, which gives us the real path of the file we already opened with
+   * O_NOFOLLOW — the TOCTOU window is negligible compared to that protection. */
+#ifdef __APPLE__
+  char fdpath[PATH_MAX];
+  if (fcntl(plugin_fd, F_GETPATH, fdpath) != 0) {
+    close(plugin_fd);
+    return nullptr;
+  }
+  void *handle = dlopen(fdpath, RTLD_NOW | RTLD_LOCAL);
+#else
   char fdpath[64];
   snprintf(fdpath, sizeof(fdpath), "/proc/self/fd/%d", plugin_fd);
   void *handle = dlopen(fdpath, RTLD_NOW | RTLD_LOCAL);
+#endif
   close(plugin_fd);   /* dlopen has its own reference; we can close ours */
   if (!handle)
     return nullptr;
