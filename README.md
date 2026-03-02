@@ -36,6 +36,17 @@ The latest & greatest version of Password Safe may be downloaded from
 or
 [GitHub](https://github.com/pwsafe/pwsafe/releases/latest).
 
+WebDAV Transport Plugin
+=======================
+This branch adds native WebDAV support, allowing Password Safe databases
+to be stored on and synchronised with any WebDAV server (e.g. Nextcloud,
+ownCloud, or a standard Apache/nginx WebDAV share).
+
+For a detailed write-up of the design and implementation, including the
+security audit process, see:
+
+[Extending a Password Manager with plugin network module — And Letting AI Audit It](https://www.linkedin.com/posts/john-critchley_ugcPost-7434194687277686784-cNAJ)
+
 Internationalization (Non-English Support)
 ==========================================
 Thanks to the help of volunteers from all over the world, Password Safe
