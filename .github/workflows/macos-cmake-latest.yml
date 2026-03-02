@@ -102,6 +102,8 @@ jobs:
         make -j $HOST_NCPU
         cd locale; make allmo; cd ..
         sudo make install
+        # Fix ownership so actions/cache can archive these files
+        sudo chown -R $(id -u):$(id -g) $WX_BUILD_DIR
         du -sh $WX_BUILD_DIR
 
     - name: Generate and print xcconfigs

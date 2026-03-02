@@ -184,11 +184,8 @@ static bool so_claims_scheme_fd(int fd, const std::string &scheme)
  */
 static int open_plugin_fd(const std::string &scheme)
 {
-#ifdef __APPLE__
-  const std::string filename = "pwsafe-" + scheme + ".dylib";
-#else
+  /* Plugins use SUFFIX ".so" on all Unix platforms (macOS included) */
   const std::string filename = "pwsafe-" + scheme + ".so";
-#endif
 
   std::vector<std::string> dirs = { get_app_dir() };
 #ifdef DEVELOPMENT

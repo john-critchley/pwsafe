@@ -5,9 +5,9 @@ set (TEST_SRCS
   AuxParseTest.cpp UtilTest.cpp FileEncDecTest.cpp ImportTextTest.cpp TOTPTest.cpp Base32Test.cpp
   ValidateTest.cpp MRUListTest.cpp)
 
-# TransportTest uses Linux-only transport plugin infrastructure
-# (pws_get_cache_path, pws_transport_unload are not compiled on Windows/macOS)
-if (${CMAKE_SYSTEM_NAME} MATCHES "(Linux|FreeBSD|OpenBSD)")
+# TransportTest uses Unix transport plugin infrastructure
+# (not compiled on Windows)
+if (${CMAKE_SYSTEM_NAME} MATCHES "(Linux|FreeBSD|OpenBSD|Darwin)")
   list (APPEND TEST_SRCS TransportTest.cpp)
 endif()
 
@@ -51,7 +51,7 @@ add_test(NAME Coretests
 # TransportTest can find it via get_app_dir() (reads /proc/self/exe).
 # Use add_custom_target(ALL ...) rather than POST_BUILD so that Ninja
 # includes this as an explicit build step when building the 'all' target.
-if (${CMAKE_SYSTEM_NAME} MATCHES "(Linux|FreeBSD|OpenBSD)")
+if (${CMAKE_SYSTEM_NAME} MATCHES "(Linux|FreeBSD|OpenBSD|Darwin)")
   add_custom_target(copy_file_transport_plugin ALL
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
       $<TARGET_FILE:pwsafe-file>
