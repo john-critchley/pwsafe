@@ -36,16 +36,47 @@ The latest & greatest version of Password Safe may be downloaded from
 or
 [GitHub](https://github.com/pwsafe/pwsafe/releases/latest).
 
-WebDAV Transport Plugin
-=======================
-This branch adds native WebDAV support, allowing Password Safe databases
-to be stored on and synchronised with any WebDAV server (e.g. Nextcloud,
-ownCloud, or a standard Apache/nginx WebDAV share).
+Transport Plugin Extensions
+===========================
+This branch adds a loadable transport plugin mechanism, allowing Password
+Safe databases to be stored on remote services without changing any of the
+cryptographic, record-parsing, or core UI layers.
 
-For a detailed write-up of the design and implementation, including the
-security audit process, see:
+When a database path starts with a URL scheme (e.g. `https://`), the main
+binary loads a matching plugin shared library (`pwsafe-<scheme>.so`) and
+delegates all I/O to it.  For local paths, everything is unchanged.  The
+application always works against a local cache file
+(`~/.pwsafe/cache/<sha256-of-url>.psafe3`); the plugin only needs to
+synchronise that copy with the remote on open and save.  If the remote is
+unreachable and a cache exists, the user is offered offline mode.
 
-[Extending a Password Manager with plugin network module — And Letting AI Audit It](https://www.linkedin.com/posts/john-critchley_ugcPost-7434194687277686784-cNAJ)
+Each plugin implements a plain C interface: `fetch`, `store`, `exists`,
+`lock`, `unlock`, and `cleanup`.  Plugins are standalone shared libraries
+with no link dependency on the main binary.
+
+Two plugins are included:
+
+**`file:` transport** (`src/os/plugins/file/`) — a ~135-line reference
+implementation that maps `file:///path` to a local file.  It exercises
+every hook and serves as the integration-test harness for the dispatch
+layer.
+
+**WebDAV transport** (`src/os/plugins/webdav/`) — stores databases on any
+WebDAV server (Nextcloud, ownCloud, Apache, nginx).  Uses libcurl for
+HTTP/HTTPS; reads credentials from `~/.netrc`.  Supports WebDAV Class 2
+locking (RFC 4918): acquires an exclusive LOCK before open, releases it on
+close, and includes the `If:` conditional header on PUT to guard against
+conflicting writes.  A separate lock-daemon child process holds the lock
+token and releases it even if the parent crashes.  Build with
+`cmake -DWITH_WEBDAV=ON`.
+
+See [README.WEBDAV.md](README.WEBDAV.md) for build instructions, usage,
+credentials setup, and a guide to writing new plugins.
+
+For a write-up of the design and implementation process, including the
+security audit, see:
+
+[Extending a Password Manager with a Plugin Network Module — And Letting AI Audit It](https://www.linkedin.com/posts/john-critchley_ugcPost-7434194687277686784-cNAJ)
 
 Internationalization (Non-English Support)
 ==========================================
