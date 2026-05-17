@@ -181,6 +181,12 @@ void pws_cache_remove(FILE *fd);
 /** Unload the plugin for a scheme (called when DB using it is closed) */
 void pws_transport_unload(const std::string &scheme);
 
+/**
+ * Return true if PWSAFE_DEBUG_TRANSPORT is set in the environment.
+ * Used to gate verbose stderr tracing for transport operations.
+ */
+bool pws_transport_debug();
+
 /*
  * Active-lock registry.
  *

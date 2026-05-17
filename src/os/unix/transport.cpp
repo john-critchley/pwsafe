@@ -203,6 +203,13 @@ static int open_plugin_fd(const std::string &scheme)
 
 /* ---- public API ---- */
 
+bool pws_transport_debug()
+{
+  static int v = -1;
+  if (v < 0) v = (getenv("PWSAFE_DEBUG_TRANSPORT") != nullptr) ? 1 : 0;
+  return v != 0;
+}
+
 bool pws_is_transport_url(const std::string &path)
 {
   return !extract_scheme(path).empty();
@@ -224,12 +231,25 @@ const PWSTransport *pws_find_transport(const std::string &url)
    * /proc/self/fd/<n>, ensuring no TOCTOU race between check and load. */
   int plugin_fd = open_plugin_fd(scheme);
   if (plugin_fd < 0) {
+    if (pws_transport_debug())
+      fprintf(stderr, "[pwsafe-transport] plugin not found for scheme '%s' "
+              "(searched app dir%s for pwsafe-%s.so)\n",
+              scheme.c_str(),
+#ifdef DEVELOPMENT
+              " + cwd",
+#else
+              "",
+#endif
+              scheme.c_str());
     return nullptr;   /* caller shows "plugin not found" dialog */
   }
 
   /* Verify identity string before dlopen */
   if (!so_claims_scheme_fd(plugin_fd, scheme)) {
     close(plugin_fd);
+    if (pws_transport_debug())
+      fprintf(stderr, "[pwsafe-transport] identity check failed for scheme '%s' "
+              "(plugin does not claim this scheme)\n", scheme.c_str());
     return nullptr;   /* wrong plugin or renamed file */
   }
 
@@ -286,6 +306,9 @@ const PWSTransport *pws_find_transport(const std::string &url)
   }
 
   s_handles[scheme] = handle;
+  if (pws_transport_debug())
+    fprintf(stderr, "[pwsafe-transport] loaded plugin for scheme '%s'\n",
+            scheme.c_str());
   return it->second;
 }
 

@@ -1,0 +1,149 @@
+# Makefile.transport-tests
+# -------------------------
+# Build and run the transport plugin test suites.
+# Run from the repository root.
+#
+# Targets
+# -------
+#   make -f Makefile.transport-tests              # offline tests only (default)
+#   make -f Makefile.transport-tests local-live   # offline + local wsgidav server
+#   make -f Makefile.transport-tests live         # offline + remote live-server tests
+#   make -f Makefile.transport-tests ci-live      # CI target: build plugins + live tests (no cmake)
+#   make -f Makefile.transport-tests suite0       # GTest coretest (cmake/ctest)
+#   make -f Makefile.transport-tests suite1       # standalone transport infrastructure
+#   make -f Makefile.transport-tests suite2       # WebDAV plugin  (needs server)
+#   make -f Makefile.transport-tests suite3       # lock lifecycle (needs server)
+#   make -f Makefile.transport-tests build        # compile test binaries only
+#   make -f Makefile.transport-tests build-plugins # build plugin .so files without cmake
+#   make -f Makefile.transport-tests clean        # remove compiled test binaries and plugins
+#
+# Environment
+# -----------
+#   WEBDAV_URL   live-server base URL (default: https://webdav.critchley.biz/test)
+#   CXX          C++ compiler        (default: g++)
+
+# Test suites must run sequentially: they share /tmp paths and ~/.cache/pwsafe/,
+# and suite3 forks a lock-daemon child that would conflict with concurrent runs.
+# .NOTPARALLEL ensures this holds even if the caller passes -j.
+.NOTPARALLEL:
+
+WEBDAV_URL ?= https://webdav.critchley.biz/test
+BUILD      := build
+SRCS       := src
+CXX        ?= g++
+TMPDIR     := /tmp
+
+BIN_STANDALONE := $(TMPDIR)/transport_standalone_test
+BIN_WEBDAV     := $(TMPDIR)/transport_webdav_test
+BIN_LIFECYCLE  := $(TMPDIR)/transport_lock_lifecycle_test
+
+# ---- plugin build rules (no cmake required) ----
+#
+# These build the plugin .so files directly with g++ so that CI and developers
+# can run the live tests without a full cmake build.  The binaries land in
+# $(BUILD)/ which is the cwd for all suite runs.
+
+SO_FILE   := $(BUILD)/pwsafe-file.so
+SO_HTTPS  := $(BUILD)/pwsafe-https.so
+SO_HTTP   := $(BUILD)/pwsafe-http.so
+
+$(SO_FILE): $(SRCS)/os/plugins/file/transport-file.cpp $(SRCS)/os/transport.h
+	mkdir -p $(BUILD)
+	$(CXX) -std=c++17 -shared -fPIC -DDEVELOPMENT \
+	    -I$(SRCS) \
+	    -o $@ $(SRCS)/os/plugins/file/transport-file.cpp
+
+$(SO_HTTPS): $(SRCS)/os/plugins/webdav/transport-webdav.cpp $(SRCS)/os/transport.h
+	mkdir -p $(BUILD)
+	$(CXX) -std=c++17 -shared -fPIC -DDEVELOPMENT \
+	    -I$(SRCS) \
+	    -o $@ $(SRCS)/os/plugins/webdav/transport-webdav.cpp \
+	    $$(pkg-config --libs libcurl)
+
+$(SO_HTTP): $(SO_HTTPS)
+	ln -sf pwsafe-https.so $(SO_HTTP)
+
+.PHONY: build-plugins
+build-plugins: $(SO_FILE) $(SO_HTTPS) $(SO_HTTP)
+
+# ---- test binary build rules ----
+
+$(BIN_STANDALONE): $(SRCS)/test/transport_standalone_test.cpp \
+                   $(SRCS)/os/unix/transport.cpp
+	$(CXX) -std=c++17 -DDEVELOPMENT -I$(SRCS) -o $@ $^ -ldl
+
+$(BIN_WEBDAV): $(SRCS)/test/transport_webdav_test.cpp
+	$(CXX) -std=c++17 -o $@ $^ -ldl
+
+$(BIN_LIFECYCLE): $(SRCS)/test/transport_lock_lifecycle_test.cpp \
+                  $(SRCS)/os/unix/transport.cpp \
+                  $(SRCS)/os/unix/transport_lockd.cpp
+	$(CXX) -std=c++17 -DDEVELOPMENT -I$(SRCS) -o $@ $^ -ldl
+
+build: $(BIN_STANDALONE) $(BIN_WEBDAV) $(BIN_LIFECYCLE)
+
+# ---- individual suite targets ----
+
+.PHONY: suite0 suite1 suite2 suite3
+
+suite0:
+	@echo ""
+	@echo "=== Suite 0: GTest coretest (cmake / ctest) ==="
+	cd $(BUILD) && ctest -R Coretests --output-on-failure
+
+suite1: $(BIN_STANDALONE)
+	@echo ""
+	@echo "=== Suite 1: Standalone transport infrastructure ==="
+	cd $(BUILD) && $(BIN_STANDALONE)
+
+suite2: $(BIN_WEBDAV)
+	@echo ""
+	@echo "=== Suite 2: WebDAV plugin  [live: $(WEBDAV_URL)] ==="
+	cd $(BUILD) && PWSAFE_WEBDAV_TEST_URL=$(WEBDAV_URL) $(BIN_WEBDAV)
+
+suite3: $(BIN_LIFECYCLE)
+	@echo ""
+	@echo "=== Suite 3: Lock lifecycle  [live: $(WEBDAV_URL)] ==="
+	cd $(BUILD) && PWSAFE_WEBDAV_TEST_URL=$(WEBDAV_URL) $(BIN_LIFECYCLE)
+
+# Suite 3 offline: live sections self-skip (exit 77) when URL is unset
+suite3-offline: $(BIN_LIFECYCLE)
+	@echo ""
+	@echo "=== Suite 3: Lock lifecycle  [offline sections only] ==="
+	cd $(BUILD) && $(BIN_LIFECYCLE); s=$$?; [ $$s -eq 0 ] || [ $$s -eq 77 ]
+
+# ---- aggregate targets ----
+
+.PHONY: all local live ci-live local-live build clean
+
+all: local
+
+local: suite0 suite1 suite3-offline
+	@echo ""
+	@echo "========================================"
+	@echo "All local (offline) tests passed."
+	@echo "========================================"
+
+# local-live: all offline tests + suites 2 and 3 via a local wsgidav server.
+# Requires: pip install --user --break-system-packages wsgidav cheroot
+local-live: suite0 suite1 $(BIN_WEBDAV) $(BIN_LIFECYCLE)
+	bash $(SRCS)/test/run_local_webdav_tests.sh
+
+live: suite0 suite1 suite2 suite3
+	@echo ""
+	@echo "========================================"
+	@echo "All tests passed (including live server)."
+	@echo "========================================"
+
+# ci-live: build plugins with g++ (no cmake), then run suites 1-3 against the
+# live server.  suite0 (ctest) is skipped because it needs a cmake build.
+# Requires: libcurl4-openssl-dev (or equivalent) and WEBDAV_URL to be reachable.
+ci-live: build-plugins build suite1 suite2 suite3
+	@echo ""
+	@echo "========================================"
+	@echo "CI live tests passed."
+	@echo "========================================"
+
+clean:
+	rm -f $(BIN_STANDALONE) $(BIN_WEBDAV) $(BIN_LIFECYCLE)
+	rm -f $(SO_FILE) $(SO_HTTPS) $(SO_HTTP)

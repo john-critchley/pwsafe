@@ -54,7 +54,11 @@ endif ()
     mac/utf8conv.cpp
     mac/UUID.cpp
     mac/media.cpp
+    unix/transport.cpp
+    unix/transport_lockd.cpp
     )
+  add_subdirectory(plugins/file)
+  add_subdirectory(plugins/webdav)
   elseif (${CMAKE_SYSTEM_NAME} MATCHES "(Linux|FreeBSD|OpenBSD)")
   set (OS_SRCS
     unix/KeySend.cpp

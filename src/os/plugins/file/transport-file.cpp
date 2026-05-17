@@ -29,16 +29,21 @@
 #include <sys/stat.h>
 
 /*
- * Embedded identity string in the ELF .comment section.
+ * Embedded identity string: must survive the optimiser so that the pre-load
+ * memmem() scan in pws_find_transport() can verify the plugin's scheme.
  *
- * A plain `static const char[]` is eliminated by the Release-mode optimiser
- * (dead variable with no references).  Injecting via inline assembler into
- * .comment guarantees survival at -O2/-O3 and is still found by
- * so_claims_scheme()'s memmem() scan of the raw .so file bytes.
+ * On ELF (Linux): injected into the .comment section via inline asm.
+ * On Mach-O (macOS): injected into __TEXT,__cstring which is always kept.
  */
+#ifdef __APPLE__
+__asm__(".section __TEXT,__cstring,cstring_literals\n"
+        ".string \"PWS_TRANSPORT_INFO:1:file:Local file transport (testing)\"\n"
+        ".previous\n");
+#else
 __asm__(".pushsection .comment\n"
         ".string \"PWS_TRANSPORT_INFO:1:file:Local file transport (testing)\"\n"
         ".popsection\n");
+#endif
 
 namespace fs = std::filesystem;
 

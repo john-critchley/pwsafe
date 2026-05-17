@@ -39,12 +39,19 @@
 #include <string>
 
 /*
- * Embedded identity string in the ELF .comment section.
+ * Embedded identity string: must survive the optimiser so that the pre-load
+ * memmem() scan in pws_find_transport() can verify the plugin's scheme.
  * See transport-file.cpp for the rationale; same fix applies here.
  */
+#ifdef __APPLE__
+__asm__(".section __TEXT,__cstring,cstring_literals\n"
+        ".string \"PWS_TRANSPORT_INFO:1:https,http:WebDAV transport\"\n"
+        ".previous\n");
+#else
 __asm__(".pushsection .comment\n"
         ".string \"PWS_TRANSPORT_INFO:1:https,http:WebDAV transport\"\n"
         ".popsection\n");
+#endif
 
 /*
  * Internal lock-token store.
