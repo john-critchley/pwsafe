@@ -47,15 +47,6 @@ using namespace std;
 
 const TCHAR pws_os::PathSeparator = _T('/');
 
-/* Thin wrapper so transport functions can receive std::string. */
-static std::string toUtf8(const stringT &ws)
-{
-  char *p = createFileSystemRepresentation(ws);
-  std::string s(p);
-  delete[] p;
-  return s;
-}
-
 // To add non-Unicode support, createFileSystemRepresentation() needs to be extended,
 // and the conversion of the mode parameter of FOpen().
 #ifndef UNICODE
@@ -78,6 +69,15 @@ static char *createFileSystemRepresentation(const stringT &filename)
 
   CFRelease(str);
   return buffer;
+}
+
+/* Thin wrapper so transport functions can receive std::string. */
+static std::string toUtf8(const stringT &ws)
+{
+  char *p = createFileSystemRepresentation(ws);
+  std::string s(p);
+  delete[] p;
+  return s;
 }
 
 bool pws_os::FileExists(const stringT &filename)
