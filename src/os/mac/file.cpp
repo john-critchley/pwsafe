@@ -85,10 +85,13 @@ bool pws_os::FileExists(const stringT &filename)
   std::string fn = toUtf8(filename);
   if (pws_is_transport_url(fn)) {
     const PWSTransport *t = pws_find_transport(fn);
+    if (!t) {
+      fprintf(stderr, "[pwsafe] no transport plugin for URL: %s\n", fn.c_str());
+      return false;
+    }
     if (pws_transport_debug())
-      fprintf(stderr, "[pwsafe-transport] FileExists(%s): transport=%s\n",
-              fn.c_str(), t ? "found" : "not found");
-    return t && (t->exists(fn.c_str()) == 0);
+      fprintf(stderr, "[pwsafe-transport] FileExists(%s): transport=found\n", fn.c_str());
+    return t->exists(fn.c_str()) == 0;
   }
   struct stat statbuf;
   return (::stat(fn.c_str(), &statbuf) == 0);
@@ -100,8 +103,12 @@ bool pws_os::FileExists(const stringT &filename, bool &bReadOnly)
   std::string fn = toUtf8(filename);
   if (pws_is_transport_url(fn)) {
     const PWSTransport *t = pws_find_transport(fn);
+    if (!t) {
+      fprintf(stderr, "[pwsafe] no transport plugin for URL: %s\n", fn.c_str());
+      return false;
+    }
     /* Remote files: treat as read-write if they exist */
-    return t && (t->exists(fn.c_str()) == 0);
+    return t->exists(fn.c_str()) == 0;
   }
   bool retval = (::access(fn.c_str(), R_OK) == 0);
   if (retval)

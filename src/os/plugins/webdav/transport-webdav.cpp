@@ -38,20 +38,9 @@
 #include <map>
 #include <string>
 
-/*
- * Embedded identity string: must survive the optimiser so that the pre-load
- * memmem() scan in pws_find_transport() can verify the plugin's scheme.
- * See transport-file.cpp for the rationale; same fix applies here.
- */
-#ifdef __APPLE__
-__asm__(".section __TEXT,__cstring,cstring_literals\n"
-        ".string \"PWS_TRANSPORT_INFO:1:https,http:WebDAV transport\"\n"
-        ".previous\n");
-#else
-__asm__(".pushsection .comment\n"
-        ".string \"PWS_TRANSPORT_INFO:1:https,http:WebDAV transport\"\n"
-        ".popsection\n");
-#endif
+/* Identity string scanned by pws_find_transport() before dlopen(). */
+__attribute__((used)) static const char pws_transport_ident[] =
+    "PWS_TRANSPORT_INFO:1:https,http:WebDAV transport";
 
 /*
  * Internal lock-token store.
@@ -193,10 +182,8 @@ static int webdav_fetch(const char *url, const char *local_path)
   if (err == 0 && ctx.err != 0)
     err = ctx.err;
 
-#if defined(_DEBUG) || defined(DEBUG)
-  fprintf(stderr, "[pwsafe-webdav] fetch %s → %s : curl=%d err=%d\n",
-          url, local_path, (int)rc, err);
-#endif
+  fprintf(stderr, "[pwsafe-webdav] fetch %s -> %s : %s\n",
+          url, local_path, err == 0 ? "ok" : strerror(err));
   curl_easy_cleanup(c);
   fclose(fp);
   return err;
@@ -255,10 +242,8 @@ static int webdav_store(const char *local_path, const char *url)
   if (hdrs)
     curl_slist_free_all(hdrs);
 
-#if defined(_DEBUG) || defined(DEBUG)
-  fprintf(stderr, "[pwsafe-webdav] store %s → %s : curl=%d err=%d\n",
-          local_path, url, (int)rc, err);
-#endif
+  fprintf(stderr, "[pwsafe-webdav] store %s -> %s : %s\n",
+          local_path, url, err == 0 ? "ok" : strerror(err));
   curl_easy_cleanup(c);
   fclose(fp);
   return err;
@@ -281,6 +266,8 @@ static int webdav_exists(const char *url)
   CURLcode rc = curl_easy_perform(c);
   int err = curl_to_errno(c, rc);
 
+  fprintf(stderr, "[pwsafe-webdav] exists %s : %s\n",
+          url, err == 0 ? "found" : strerror(err));
   curl_easy_cleanup(c);
   return err;
 }

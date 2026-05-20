@@ -226,30 +226,31 @@ const PWSTransport *pws_find_transport(const std::string &url)
   if (it != s_transports.end())
     return it->second;
 
+  fprintf(stderr, "[pwsafe-transport] URL scheme '%s' identified, looking for pwsafe-%s.so\n",
+          scheme.c_str(), scheme.c_str());
+
   /* Open the plugin file once with O_NOFOLLOW to prevent symlink attacks.
    * We use the same fd for the identity check (mmap) and for dlopen via
    * /proc/self/fd/<n>, ensuring no TOCTOU race between check and load. */
   int plugin_fd = open_plugin_fd(scheme);
   if (plugin_fd < 0) {
-    if (pws_transport_debug())
-      fprintf(stderr, "[pwsafe-transport] plugin not found for scheme '%s' "
-              "(searched app dir%s for pwsafe-%s.so)\n",
-              scheme.c_str(),
+    fprintf(stderr, "[pwsafe-transport] no plugin found for scheme '%s' "
+            "(looked for pwsafe-%s.so in app dir%s)\n",
+            scheme.c_str(), scheme.c_str(),
 #ifdef DEVELOPMENT
-              " + cwd",
+            " + cwd"
 #else
-              "",
+            ""
 #endif
-              scheme.c_str());
+            );
     return nullptr;   /* caller shows "plugin not found" dialog */
   }
 
   /* Verify identity string before dlopen */
   if (!so_claims_scheme_fd(plugin_fd, scheme)) {
     close(plugin_fd);
-    if (pws_transport_debug())
-      fprintf(stderr, "[pwsafe-transport] identity check failed for scheme '%s' "
-              "(plugin does not claim this scheme)\n", scheme.c_str());
+    fprintf(stderr, "[pwsafe-transport] plugin identity check failed for scheme '%s' "
+            "(plugin does not claim this scheme)\n", scheme.c_str());
     return nullptr;   /* wrong plugin or renamed file */
   }
 
@@ -306,9 +307,7 @@ const PWSTransport *pws_find_transport(const std::string &url)
   }
 
   s_handles[scheme] = handle;
-  if (pws_transport_debug())
-    fprintf(stderr, "[pwsafe-transport] loaded plugin for scheme '%s'\n",
-            scheme.c_str());
+  fprintf(stderr, "[pwsafe-transport] loaded pwsafe-%s.so successfully\n", scheme.c_str());
   return it->second;
 }
 
