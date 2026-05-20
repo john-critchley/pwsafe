@@ -195,8 +195,14 @@ static int open_plugin_fd(const std::string &scheme)
   for (const auto &dir : dirs) {
     std::string path = dir + "/" + filename;
     int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-    if (fd >= 0)
+    if (fd >= 0) {
+      if (pws_transport_debug())
+        fprintf(stderr, "[pwsafe-transport] opened plugin candidate: %s\n", path.c_str());
       return fd;
+    }
+    if (pws_transport_debug())
+      fprintf(stderr, "[pwsafe-transport] plugin candidate not usable: %s (%s)\n",
+              path.c_str(), strerror(errno));
   }
   return -1;
 }
@@ -262,23 +268,37 @@ const PWSTransport *pws_find_transport(const std::string &url)
 #ifdef __APPLE__
   char fdpath[PATH_MAX];
   if (fcntl(plugin_fd, F_GETPATH, fdpath) != 0) {
+    if (pws_transport_debug())
+      fprintf(stderr, "[pwsafe-transport] F_GETPATH failed for plugin fd: %s\n",
+              strerror(errno));
     close(plugin_fd);
     return nullptr;
   }
+  if (pws_transport_debug())
+    fprintf(stderr, "[pwsafe-transport] dlopen plugin path: %s\n", fdpath);
   void *handle = dlopen(fdpath, RTLD_NOW | RTLD_LOCAL);
 #else
   char fdpath[64];
   snprintf(fdpath, sizeof(fdpath), "/proc/self/fd/%d", plugin_fd);
+  if (pws_transport_debug())
+    fprintf(stderr, "[pwsafe-transport] dlopen plugin fd path: %s\n", fdpath);
   void *handle = dlopen(fdpath, RTLD_NOW | RTLD_LOCAL);
 #endif
   close(plugin_fd);   /* dlopen has its own reference; we can close ours */
-  if (!handle)
+  if (!handle) {
+    if (pws_transport_debug())
+      fprintf(stderr, "[pwsafe-transport] dlopen failed for pwsafe-%s.so: %s\n",
+              scheme.c_str(), dlerror());
     return nullptr;
+  }
 
   auto *init_fn = reinterpret_cast<void (*)(pws_register_fn_t)>(
       dlsym(handle, "pws_plugin_init"));
 
   if (!init_fn) {
+    if (pws_transport_debug())
+      fprintf(stderr, "[pwsafe-transport] dlsym(pws_plugin_init) failed: %s\n",
+              dlerror());
     dlclose(handle);
     return nullptr;
   }
@@ -302,6 +322,9 @@ const PWSTransport *pws_find_transport(const std::string &url)
   /* Did it register for our scheme? */
   it = s_transports.find(scheme);
   if (it == s_transports.end()) {
+    if (pws_transport_debug())
+      fprintf(stderr, "[pwsafe-transport] plugin loaded but did not register scheme '%s'\n",
+              scheme.c_str());
     dlclose(handle);
     return nullptr;
   }
