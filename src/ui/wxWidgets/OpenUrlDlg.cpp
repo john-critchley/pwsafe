@@ -15,7 +15,6 @@
 #include <wx/button.h>
 #include <wx/sizer.h>
 #include <wx/stattext.h>
-#include <wx/utils.h>
 
 BEGIN_EVENT_TABLE(OpenUrlDlg, wxDialog)
   EVT_BUTTON(wxID_OK, OpenUrlDlg::OnOkClick)
@@ -44,10 +43,7 @@ void OpenUrlDlg::CreateControls(const wxArrayString &recentUrls)
   m_urlCtrl = new wxComboBox(this, wxID_ANY, wxEmptyString,
                               wxDefaultPosition, wxSize(420, -1),
                               recentUrls, wxCB_DROPDOWN);
-  wxString defaultUrl;
-  if (wxGetEnv(wxT("DEFAULT_URL"), &defaultUrl) && !defaultUrl.IsEmpty())
-    m_urlCtrl->SetValue(defaultUrl);
-  else if (!recentUrls.IsEmpty())
+  if (!recentUrls.IsEmpty())
     m_urlCtrl->SetValue(recentUrls[0]);
   row->Add(m_urlCtrl, 1, wxEXPAND);
 
