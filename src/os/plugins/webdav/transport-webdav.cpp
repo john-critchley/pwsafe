@@ -10,7 +10,8 @@
  * \file WebDAV transport plugin.
  *
  * Implements the PWSTransport interface over HTTP/HTTPS using libcurl.
- * Credentials are supplied via ~/.netrc (CURLOPT_NETRC = CURL_NETRC_OPTIONAL).
+ * Credentials are supplied via ~/.netrc.  Both standard "login" and cadaver's
+ * accepted "user" spelling are supported.
  *
  * URL format:  https://server/path/to/file.psafe3
  *              http://server/path/to/file.psafe3
@@ -31,7 +32,9 @@
 #include <unistd.h>
 
 #include <cassert>
+#include <cctype>
 #include <cerrno>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -83,6 +86,151 @@ static size_t read_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
 }
 
 /* --------------------------------------------------------------------------
+ * ~/.netrc helpers
+ * -------------------------------------------------------------------------- */
+
+struct NetrcCreds {
+  std::string login;
+  std::string password;
+};
+
+static std::string url_host(const char *url)
+{
+  std::string s(url ? url : "");
+  size_t start = s.find("://");
+  start = (start == std::string::npos) ? 0 : start + 3;
+
+  size_t slash = s.find('/', start);
+  std::string authority = s.substr(start, slash == std::string::npos ? std::string::npos : slash - start);
+
+  size_t at = authority.rfind('@');
+  if (at != std::string::npos)
+    authority = authority.substr(at + 1);
+
+  if (!authority.empty() && authority[0] == '[') {
+    size_t close = authority.find(']');
+    if (close != std::string::npos)
+      return authority.substr(1, close - 1);
+  }
+
+  size_t colon = authority.find(':');
+  return authority.substr(0, colon);
+}
+
+static bool next_netrc_token(std::istream &in, std::string &tok)
+{
+  tok.clear();
+  char ch;
+
+  while (in.get(ch)) {
+    if (ch == '#') {
+      in.ignore(1024 * 1024, '\n');
+      continue;
+    }
+    if (!std::isspace(static_cast<unsigned char>(ch)))
+      break;
+  }
+  if (!in)
+    return false;
+
+  if (ch == '"') {
+    while (in.get(ch)) {
+      if (ch == '"')
+        break;
+      if (ch == '\\' && in.peek() != EOF)
+        in.get(ch);
+      tok += ch;
+    }
+    return true;
+  }
+
+  tok += ch;
+  while (in.get(ch)) {
+    if (std::isspace(static_cast<unsigned char>(ch)))
+      break;
+    if (ch == '#') {
+      in.ignore(1024 * 1024, '\n');
+      break;
+    }
+    tok += ch;
+  }
+  return true;
+}
+
+static bool read_netrc_for_host(const std::string &host, NetrcCreds &creds)
+{
+  const char *home = getenv("HOME");
+  if (!home || !*home || host.empty())
+    return false;
+
+  std::ifstream in(std::string(home) + "/.netrc");
+  if (!in)
+    return false;
+
+  bool active = false;
+  bool default_active = false;
+  bool matched = false;
+  NetrcCreds cur;
+  std::string tok;
+
+  auto finish_entry = [&]() {
+    if ((active || default_active) && !cur.login.empty() && !cur.password.empty()) {
+      creds = cur;
+      matched = active;
+    }
+  };
+
+  while (next_netrc_token(in, tok)) {
+    if (tok == "machine") {
+      finish_entry();
+      if (matched)
+        return true;
+
+      std::string machine;
+      if (!next_netrc_token(in, machine))
+        break;
+      active = (machine == host);
+      default_active = false;
+      cur = NetrcCreds();
+    } else if (tok == "default") {
+      finish_entry();
+      if (matched)
+        return true;
+      active = false;
+      default_active = true;
+      cur = NetrcCreds();
+    } else if (tok == "login" || tok == "user") {
+      std::string value;
+      if (!next_netrc_token(in, value))
+        break;
+      if (active || default_active)
+        cur.login = value;
+    } else if (tok == "password") {
+      std::string value;
+      if (!next_netrc_token(in, value))
+        break;
+      if (active || default_active)
+        cur.password = value;
+    } else if (tok == "account") {
+      std::string ignored;
+      if (!next_netrc_token(in, ignored))
+        break;
+    } else if (tok == "macdef") {
+      std::string ignored;
+      if (!next_netrc_token(in, ignored))
+        break;
+      in.ignore(1024 * 1024, '\n');
+      std::string line;
+      while (std::getline(in, line) && !line.empty()) {
+      }
+    }
+  }
+
+  finish_entry();
+  return matched || (!creds.login.empty() && !creds.password.empty());
+}
+
+/* --------------------------------------------------------------------------
  * Helper: initialise a CURL handle with common options
  * -------------------------------------------------------------------------- */
 
@@ -93,7 +241,13 @@ static CURL *make_curl(const char *url)
     return nullptr;
 
   curl_easy_setopt(c, CURLOPT_URL, url);
-  curl_easy_setopt(c, CURLOPT_NETRC, CURL_NETRC_OPTIONAL);
+  NetrcCreds creds;
+  if (read_netrc_for_host(url_host(url), creds)) {
+    curl_easy_setopt(c, CURLOPT_USERNAME, creds.login.c_str());
+    curl_easy_setopt(c, CURLOPT_PASSWORD, creds.password.c_str());
+  } else {
+    curl_easy_setopt(c, CURLOPT_NETRC, CURL_NETRC_OPTIONAL);
+  }
   curl_easy_setopt(c, CURLOPT_FAILONERROR, 1L);   /* treat 4xx/5xx as errors */
   curl_easy_setopt(c, CURLOPT_USERAGENT, "pwsafe-webdav/1.0");
 
