@@ -141,10 +141,10 @@ jobs:
            /Fe:build\transport_webdav_test.exe
       shell: cmd
 
-    - name: Copy curl runtime DLL to test directory
+    - name: Copy curl runtime DLLs to test directory
       if: steps.check_server_win.outputs.reachable == 'true'
       run: |
-        copy %VCPKG_INSTALLATION_ROOT%\installed\x64-windows\bin\libcurl.dll build\
+        copy %VCPKG_INSTALLATION_ROOT%\installed\x64-windows\bin\*.dll build\
       shell: cmd
 
     - name: Suite 2 — WebDAV plugin (live server, Windows)
