@@ -56,7 +56,10 @@ bool pws_os::FileExists(const stringT &filename)
   std::string fn = toUtf8(filename);
   if (pws_is_transport_url(fn)) {
     const PWSTransport *t = pws_find_transport(fn);
-    return t && (t->exists(fn.c_str()) == 0);
+    if (!t) { errno = ENOTSUP; return false; }
+    int rc = t->exists(fn.c_str());
+    if (rc != 0) { errno = rc; return false; }
+    return true;
   }
   struct stat statbuf;
   return (::stat(fn.c_str(), &statbuf) == 0);
@@ -68,8 +71,11 @@ bool pws_os::FileExists(const stringT &filename, bool &bReadOnly)
   std::string fn = toUtf8(filename);
   if (pws_is_transport_url(fn)) {
     const PWSTransport *t = pws_find_transport(fn);
+    if (!t) { errno = ENOTSUP; return false; }
+    int rc = t->exists(fn.c_str());
+    if (rc != 0) { errno = rc; return false; }
     /* Remote files: assume read-write if they exist */
-    return t && (t->exists(fn.c_str()) == 0);
+    return true;
   }
   bool retval = (::access(fn.c_str(), R_OK) == 0);
   if (retval)

@@ -24,6 +24,8 @@
 #include <wx/filename.h>
 
 #include "os/file.h"
+#include <cerrno>
+#include <cstring>
 
 ////@begin includes
 #include "ExternalKeyboardButton.h"
@@ -272,9 +274,13 @@ void SafeCombinationPromptDlg::OnOkClick(wxCommandEvent& WXUNUSED(evt))
       err.ShowModal();
 
     } else if (!pws_os::FileExists(tostdstring(m_filename))) {
-      wxMessageDialog err(this, _("File or path not found."),
-                          _("Error"), wxOK | wxICON_EXCLAMATION);
-      err.ShowModal();
+      { wxString msg = _("File or path not found.");
+        if (errno == ENOTSUP)
+          msg = _("No transport plugin available for this URL scheme.");
+        else if (errno != 0 && errno != ENOENT)
+          msg += wxString::Format(L"\n(%hs)", strerror(errno));
+        wxMessageDialog err(this, msg, _("Error"), wxOK | wxICON_EXCLAMATION);
+        err.ShowModal(); }
 
     } else if (ProcessPhrase()) {
       EndModal(wxID_OK);
@@ -305,9 +311,13 @@ void SafeCombinationPromptDlg::OnYubibtnClick(wxCommandEvent& WXUNUSED(event))
 
   if (Validate() && TransferDataFromWindow()) {
     if (!pws_os::FileExists(tostdstring(m_filename))) {
-      wxMessageDialog err(this, _("File or path not found."),
-                          _("Error"), wxOK | wxICON_EXCLAMATION);
-      err.ShowModal();
+      { wxString msg = _("File or path not found.");
+        if (errno == ENOTSUP)
+          msg = _("No transport plugin available for this URL scheme.");
+        else if (errno != 0 && errno != ENOENT)
+          msg += wxString::Format(L"\n(%hs)", strerror(errno));
+        wxMessageDialog err(this, msg, _("Error"), wxOK | wxICON_EXCLAMATION);
+        err.ShowModal(); }
 
     } else {
       StringX response;

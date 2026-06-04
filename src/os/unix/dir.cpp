@@ -219,12 +219,30 @@ stringT pws_os::getxmldir(void)
 stringT pws_os::gethelpdir(void)
 {
   stringT helpdir = pws_os::getenv("PWS_HELPDIR", true);
-  if (helpdir.empty()) {
-#if defined( __FreeBSD__) || defined(__OpenBSD)
-    helpdir = _T("/usr/local/share/doc/passwordsafe/help/");
-#else
-    helpdir = _T("/usr/share/passwordsafe/help/");
-#endif
+  if (!helpdir.empty())
+    return helpdir;
+
+  /* Check alongside the binary first — supports portable/local installs. */
+  char buf[4096];
+  ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+  if (len > 0) {
+    buf[len] = '\0';
+    std::string exe(buf);
+    size_t sl = exe.rfind('/');
+    if (sl != std::string::npos) {
+      std::string candidate = exe.substr(0, sl + 1) + "helpEN.zip";
+      if (::access(candidate.c_str(), R_OK) == 0) {
+        std::string dir = exe.substr(0, sl + 1);
+        helpdir = stringT(dir.begin(), dir.end());
+        return helpdir;
+      }
+    }
   }
+
+#if defined(__FreeBSD__) || defined(__OpenBSD__)
+  helpdir = _T("/usr/local/share/doc/passwordsafe/help/");
+#else
+  helpdir = _T("/usr/share/passwordsafe/help/");
+#endif
   return helpdir;
 }

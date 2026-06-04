@@ -87,11 +87,13 @@ bool pws_os::FileExists(const stringT &filename)
     const PWSTransport *t = pws_find_transport(fn);
     if (!t) {
       fprintf(stderr, "[pwsafe] no transport plugin for URL: %s\n", fn.c_str());
-      return false;
+      errno = ENOTSUP; return false;
     }
     if (pws_transport_debug())
       fprintf(stderr, "[pwsafe-transport] FileExists(%s): transport=found\n", fn.c_str());
-    return t->exists(fn.c_str()) == 0;
+    int rc = t->exists(fn.c_str());
+    if (rc != 0) { errno = rc; return false; }
+    return true;
   }
   struct stat statbuf;
   return (::stat(fn.c_str(), &statbuf) == 0);
@@ -105,10 +107,12 @@ bool pws_os::FileExists(const stringT &filename, bool &bReadOnly)
     const PWSTransport *t = pws_find_transport(fn);
     if (!t) {
       fprintf(stderr, "[pwsafe] no transport plugin for URL: %s\n", fn.c_str());
-      return false;
+      errno = ENOTSUP; return false;
     }
+    int rc = t->exists(fn.c_str());
+    if (rc != 0) { errno = rc; return false; }
     /* Remote files: treat as read-write if they exist */
-    return t->exists(fn.c_str()) == 0;
+    return true;
   }
   bool retval = (::access(fn.c_str(), R_OK) == 0);
   if (retval)

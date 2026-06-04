@@ -30,6 +30,8 @@
 #include "core/PWSdirs.h"
 #include "core/PWSprefs.h"
 #include "os/file.h"
+#include <cerrno>
+#include <cstring>
 #include "os/env.h"
 
 ////@begin includes
@@ -348,9 +350,13 @@ void SafeCombinationEntryDlg::OnOk( wxCommandEvent& )
       FindWindow(ID_COMBINATION)->SetFocus();
 
     } else if (!pws_os::FileExists(tostdstring(m_filename))) {
-      wxMessageDialog err(this, _("File or path not found."),
-                          _("Error"), wxOK | wxICON_EXCLAMATION);
-      err.ShowModal();
+      { wxString msg = _("File or path not found.");
+        if (errno == ENOTSUP)
+          msg = _("No transport plugin available for this URL scheme.");
+        else if (errno != 0 && errno != ENOENT)
+          msg += wxString::Format(L"\n(%hs)", strerror(errno));
+        wxMessageDialog err(this, msg, _("Error"), wxOK | wxICON_EXCLAMATION);
+        err.ShowModal(); }
       m_filenameCB->SetFocus();
 
     } else if (ProcessPhrase()) {
@@ -581,9 +587,13 @@ void SafeCombinationEntryDlg::OnYubibtnClick(wxCommandEvent& WXUNUSED(event))
 
   if (Validate() && TransferDataFromWindow()) {
     if (!pws_os::FileExists(tostdstring(m_filename))) {
-      wxMessageDialog err(this, _("File or path not found."),
-                          _("Error"), wxOK | wxICON_EXCLAMATION);
-      err.ShowModal();
+      { wxString msg = _("File or path not found.");
+        if (errno == ENOTSUP)
+          msg = _("No transport plugin available for this URL scheme.");
+        else if (errno != 0 && errno != ENOENT)
+          msg += wxString::Format(L"\n(%hs)", strerror(errno));
+        wxMessageDialog err(this, msg, _("Error"), wxOK | wxICON_EXCLAMATION);
+        err.ShowModal(); }
       m_filenameCB->SetFocus();
 
     } else {
