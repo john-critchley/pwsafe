@@ -277,6 +277,8 @@ void SafeCombinationPromptDlg::OnOkClick(wxCommandEvent& WXUNUSED(evt))
       { wxString msg = _("File or path not found.");
         if (errno == ENOTSUP)
           msg = _("No transport plugin available for this URL scheme.");
+        else if (errno == EACCES)
+          msg = _("Access denied by server.\nCheck ~/.netrc has a 'login' entry (not 'user') for this host.");
         else if (errno != 0 && errno != ENOENT)
           msg += wxString::Format(L"\n(%hs)", strerror(errno));
         wxMessageDialog err(this, msg, _("Error"), wxOK | wxICON_EXCLAMATION);
@@ -314,6 +316,8 @@ void SafeCombinationPromptDlg::OnYubibtnClick(wxCommandEvent& WXUNUSED(event))
       { wxString msg = _("File or path not found.");
         if (errno == ENOTSUP)
           msg = _("No transport plugin available for this URL scheme.");
+        else if (errno == EACCES)
+          msg = _("Access denied by server.\nCheck ~/.netrc has a 'login' entry (not 'user') for this host.");
         else if (errno != 0 && errno != ENOENT)
           msg += wxString::Format(L"\n(%hs)", strerror(errno));
         wxMessageDialog err(this, msg, _("Error"), wxOK | wxICON_EXCLAMATION);
