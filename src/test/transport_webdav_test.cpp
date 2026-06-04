@@ -62,6 +62,7 @@
 #  define PLUGIN_NAME "./pwsafe-https.dll"
 #else
 #  include <dlfcn.h>
+#  include <unistd.h>
 #  define PLUGIN_HANDLE    void*
 #  define plugin_open(p)   dlopen((p), RTLD_NOW | RTLD_LOCAL)
 #  define plugin_sym(h,s)  dlsym((h),(s))
@@ -125,23 +126,6 @@ static int g_pass = 0, g_fail = 0;
 
 /* ---- file helpers ---- */
 
-/* Store to url, retrying up to ~35s if EBUSY (stale lock from a previous
- * test run).  With a 30s server lock timeout this always resolves. */
-static int store_clearing_stale_lock(const char *local, const char *url)
-{
-  for (int i = 0; i < 4; ++i) {
-    int e = g_https->store(local, url);
-    if (e != EBUSY) return e;
-    printf("  NOTE  EBUSY on seed store for %s — stale lock, waiting 10s\n", url);
-#ifdef _WIN32
-    Sleep(10000);
-#else
-    sleep(10);
-#endif
-  }
-  return EBUSY;
-}
-
 static void write_file(const char *path, const char *data)
 {
   FILE *f = fopen(path, "wb");
@@ -174,6 +158,23 @@ static bool files_identical(const char *a, const char *b)
 
 static const PWSTransport *g_https = nullptr;
 static const PWSTransport *g_http  = nullptr;
+
+/* Store to url, retrying up to ~35s if EBUSY (stale lock from a previous
+ * test run).  With a 30s server lock timeout this always resolves. */
+static int store_clearing_stale_lock(const char *local, const char *url)
+{
+  for (int i = 0; i < 4; ++i) {
+    int e = g_https->store(local, url);
+    if (e != EBUSY) return e;
+    printf("  NOTE  EBUSY on seed store for %s -- stale lock, waiting 10s\n", url);
+#ifdef _WIN32
+    Sleep(10000);
+#else
+    sleep(10);
+#endif
+  }
+  return EBUSY;
+}
 
 /* Base URL for all test resources — set via PWSAFE_WEBDAV_TEST_URL */
 static std::string g_base;
