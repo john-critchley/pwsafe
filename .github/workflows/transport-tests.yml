@@ -73,6 +73,7 @@ jobs:
   # ---------------------------------------------------------------- Windows --
   transport-tests-windows:
     runs-on: windows-latest
+    needs: transport-tests-linux
     env:
       # Enable GitHub Actions binary cache for vcpkg — avoids rebuilding
       # curl from source on every run (~15 min without this).
