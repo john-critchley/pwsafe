@@ -5,9 +5,11 @@ add_library(pwsafe-https MODULE transport-webdav.cpp)
 # No "lib" prefix: produces pwsafe-https.so (Unix) or pwsafe-https.dll (Windows)
 set_target_properties(pwsafe-https PROPERTIES
   PREFIX ""
-  SUFFIX $<IF:$<BOOL:${WIN32}>,.dll,.so>
   CXX_STANDARD 17
 )
+if(WIN32)
+  set_target_properties(pwsafe-https PROPERTIES SUFFIX ".dll")
+endif()
 
 target_include_directories(pwsafe-https PRIVATE
   ${CMAKE_SOURCE_DIR}/src/os
