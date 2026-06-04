@@ -125,6 +125,23 @@ static int g_pass = 0, g_fail = 0;
 
 /* ---- file helpers ---- */
 
+/* Store to url, retrying up to ~35s if EBUSY (stale lock from a previous
+ * test run).  With a 30s server lock timeout this always resolves. */
+static int store_clearing_stale_lock(const char *local, const char *url)
+{
+  for (int i = 0; i < 4; ++i) {
+    int e = g_https->store(local, url);
+    if (e != EBUSY) return e;
+    printf("  NOTE  EBUSY on seed store for %s — stale lock, waiting 10s\n", url);
+#ifdef _WIN32
+    Sleep(10000);
+#else
+    sleep(10);
+#endif
+  }
+  return EBUSY;
+}
+
 static void write_file(const char *path, const char *data)
 {
   FILE *f = fopen(path, "wb");
@@ -290,7 +307,7 @@ static void test_lock_unlock_basic()
 
   /* Ensure the resource exists before locking */
   write_file(local, "PWS3lock-basic");
-  g_https->store(local, url.c_str());   /* create it on server */
+  store_clearing_stale_lock(local, url.c_str());
 
   char token[512] = {};
   int e = g_https->lock(url.c_str(), token, sizeof(token));
@@ -338,7 +355,7 @@ static void test_lock_store_unlock()
 
   /* Ensure the file exists on the server */
   write_file(local, data_v1);
-  int e = g_https->store(local, url.c_str());
+  int e = store_clearing_stale_lock(local, url.c_str());
   CHECK(e == 0);
 
   /* Acquire lock — token stored in plugin's internal map */
@@ -422,8 +439,8 @@ static void test_multiple_url_locks()
   std::string url_b = g_base + "/pws_webdav_multi_b.psafe3";
 
   /* Create both resources */
-  g_https->store(local, url_a.c_str());
-  g_https->store(local, url_b.c_str());
+  store_clearing_stale_lock(local, url_a.c_str());
+  store_clearing_stale_lock(local, url_b.c_str());
 
   /* Lock both */
   char ta[512] = {}, tb[512] = {};
@@ -497,7 +514,7 @@ static void test_lock_contention()
   write_file(local, "PWS3contention");
   std::string url = g_base + "/pws_webdav_contention.psafe3";
 
-  g_https->store(local, url.c_str());
+  store_clearing_stale_lock(local, url.c_str());
 
   /* --- Client 1: acquire lock --- */
   char token1[512] = {};
