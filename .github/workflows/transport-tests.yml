@@ -70,10 +70,62 @@ jobs:
       if: steps.check_server.outputs.reachable == 'true'
       run: echo "All transport test suites passed against $WEBDAV_URL"
 
+  # ----------------------------------------------------------------- macOS --
+  transport-tests-macos:
+    runs-on: macos-latest
+    needs: transport-tests-linux
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install curl (Homebrew)
+      # macOS ships with curl but curl-config / headers may be absent.
+      # Homebrew's curl is complete and includes curl-config.
+      run: |
+        brew install curl pkg-config
+        echo "$(brew --prefix curl)/bin" >> $GITHUB_PATH
+
+    - name: Write ~/.netrc for WebDAV credentials
+      run: |
+        echo "machine webdav.critchley.biz login ${{ secrets.WEBDAV_TEST_USER }} password ${{ secrets.WEBDAV_TEST_PASS }}" > ~/.netrc
+        chmod 600 ~/.netrc
+
+    - name: Verify server is reachable
+      id: check_server_mac
+      run: |
+        if curl --silent --netrc --head --max-time 10 \
+               "${WEBDAV_URL}/pwsafe_test.psafe3" | grep -q "^HTTP.*200"; then
+          echo "reachable=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "reachable=false" >> "$GITHUB_OUTPUT"
+          echo "WARNING: WebDAV server unreachable — live tests will be skipped"
+        fi
+
+    - name: Build plugin .so files and test binaries
+      if: steps.check_server_mac.outputs.reachable == 'true'
+      run: make -f Makefile.transport-tests build-plugins build
+
+    - name: Suite 1 — standalone transport infrastructure (offline)
+      if: steps.check_server_mac.outputs.reachable == 'true'
+      run: make -f Makefile.transport-tests suite1
+
+    - name: Suite 2 — WebDAV plugin (live server)
+      if: steps.check_server_mac.outputs.reachable == 'true'
+      run: make -f Makefile.transport-tests suite2
+
+    - name: Suite 3 — lock lifecycle (live server)
+      if: steps.check_server_mac.outputs.reachable == 'true'
+      run: make -f Makefile.transport-tests suite3
+
+    - name: Summarise
+      if: steps.check_server_mac.outputs.reachable == 'true'
+      run: echo "All macOS transport test suites passed against $WEBDAV_URL"
+
   # ---------------------------------------------------------------- Windows --
   transport-tests-windows:
     runs-on: windows-latest
-    needs: transport-tests-linux
+    needs: transport-tests-macos
     env:
       # Enable GitHub Actions binary cache for vcpkg — avoids rebuilding
       # curl from source on every run (~15 min without this).

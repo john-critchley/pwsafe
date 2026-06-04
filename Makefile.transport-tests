@@ -37,11 +37,29 @@ BIN_STANDALONE := $(TMPDIR)/transport_standalone_test
 BIN_WEBDAV     := $(TMPDIR)/transport_webdav_test
 BIN_LIFECYCLE  := $(TMPDIR)/transport_lock_lifecycle_test
 
+# ---- platform detection ----
+UNAME_S := $(shell uname -s)
+
+ifeq ($(UNAME_S),Darwin)
+  # macOS: loadable modules need -bundle -undefined dynamic_lookup.
+  # dlopen links are in libSystem — no -ldl needed.
+  # curl-config is more reliable than pkg-config on macOS.
+  PLUGIN_LDFLAGS := -bundle -undefined dynamic_lookup
+  CURL_CFLAGS    ?= $(shell curl-config --cflags 2>/dev/null)
+  CURL_LIBS      ?= $(shell curl-config --libs   2>/dev/null)
+  DL_LIB         :=
+else
+  PLUGIN_LDFLAGS := -shared -fPIC
+  CURL_CFLAGS    ?= $(shell pkg-config --cflags libcurl 2>/dev/null)
+  CURL_LIBS      ?= $(shell pkg-config --libs   libcurl 2>/dev/null)
+  DL_LIB         := -ldl
+endif
+
 # ---- plugin build rules (no cmake required) ----
 #
-# These build the plugin .so files directly with g++ so that CI and developers
-# can run the live tests without a full cmake build.  The binaries land in
-# $(BUILD)/ which is the cwd for all suite runs.
+# These build the plugin .so files directly with $(CXX) so that CI and
+# developers can run the live tests without a full cmake build.  The
+# binaries land in $(BUILD)/ which is the cwd for all suite runs.
 
 SO_FILE   := $(BUILD)/pwsafe-file.so
 SO_HTTPS  := $(BUILD)/pwsafe-https.so
@@ -49,16 +67,16 @@ SO_HTTP   := $(BUILD)/pwsafe-http.so
 
 $(SO_FILE): $(SRCS)/os/plugins/file/transport-file.cpp $(SRCS)/os/transport.h
 	mkdir -p $(BUILD)
-	$(CXX) -std=c++17 -shared -fPIC -DDEVELOPMENT \
+	$(CXX) -std=c++17 $(PLUGIN_LDFLAGS) -DDEVELOPMENT \
 	    -I$(SRCS) \
 	    -o $@ $(SRCS)/os/plugins/file/transport-file.cpp
 
 $(SO_HTTPS): $(SRCS)/os/plugins/webdav/transport-webdav.cpp $(SRCS)/os/transport.h
 	mkdir -p $(BUILD)
-	$(CXX) -std=c++17 -shared -fPIC -DDEVELOPMENT \
-	    -I$(SRCS) \
+	$(CXX) -std=c++17 $(PLUGIN_LDFLAGS) -DDEVELOPMENT \
+	    -I$(SRCS) $(CURL_CFLAGS) \
 	    -o $@ $(SRCS)/os/plugins/webdav/transport-webdav.cpp \
-	    $$(pkg-config --libs libcurl)
+	    $(CURL_LIBS)
 
 $(SO_HTTP): $(SO_HTTPS)
 	ln -sf pwsafe-https.so $(SO_HTTP)
@@ -70,15 +88,15 @@ build-plugins: $(SO_FILE) $(SO_HTTPS) $(SO_HTTP)
 
 $(BIN_STANDALONE): $(SRCS)/test/transport_standalone_test.cpp \
                    $(SRCS)/os/unix/transport.cpp
-	$(CXX) -std=c++17 -DDEVELOPMENT -I$(SRCS) -o $@ $^ -ldl
+	$(CXX) -std=c++17 -DDEVELOPMENT -I$(SRCS) -o $@ $^ $(DL_LIB)
 
 $(BIN_WEBDAV): $(SRCS)/test/transport_webdav_test.cpp
-	$(CXX) -std=c++17 -o $@ $^ -ldl
+	$(CXX) -std=c++17 -o $@ $^ $(DL_LIB)
 
 $(BIN_LIFECYCLE): $(SRCS)/test/transport_lock_lifecycle_test.cpp \
                   $(SRCS)/os/unix/transport.cpp \
                   $(SRCS)/os/unix/transport_lockd.cpp
-	$(CXX) -std=c++17 -DDEVELOPMENT -I$(SRCS) -o $@ $^ -ldl
+	$(CXX) -std=c++17 -DDEVELOPMENT -I$(SRCS) -o $@ $^ $(DL_LIB)
 
 build: $(BIN_STANDALONE) $(BIN_WEBDAV) $(BIN_LIFECYCLE)
 
