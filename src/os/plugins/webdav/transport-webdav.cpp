@@ -27,8 +27,14 @@
 
 #include <curl/curl.h>
 
-#include <fcntl.h>
-#include <unistd.h>
+#ifndef _WIN32
+#  include <fcntl.h>
+#  include <unistd.h>
+#else
+#  include <io.h>      /* _open, _fdopen, _close */
+#  include <fcntl.h>   /* _O_WRONLY, _O_CREAT, _O_TRUNC, _O_BINARY */
+#  define strncasecmp _strnicmp
+#endif
 
 #include <cassert>
 #include <cerrno>
@@ -38,9 +44,20 @@
 #include <map>
 #include <string>
 
-/* Identity string scanned by pws_find_transport() before dlopen(). */
+/* Identity string scanned by pws_find_transport() before dlopen/LoadLibrary.
+ * __attribute__((used)) works on GCC/Clang; MSVC needs dllexport + linker /INCLUDE. */
+#if defined(_MSC_VER)
+extern "C" __declspec(dllexport) const char pws_transport_id[] =
+    "PWS_TRANSPORT_INFO:1:https,http:WebDAV transport";
+#pragma comment(linker, "/INCLUDE:pws_transport_id")
+#elif defined(__APPLE__)
+__asm__(".section __TEXT,__cstring,cstring_literals\n"
+        ".string \"PWS_TRANSPORT_INFO:1:https,http:WebDAV transport\"\n"
+        ".previous\n");
+#else
 __attribute__((used)) static const char pws_transport_ident[] =
     "PWS_TRANSPORT_INFO:1:https,http:WebDAV transport";
+#endif
 
 /*
  * Internal lock-token store.
@@ -153,6 +170,12 @@ static int curl_to_errno(CURL *c, CURLcode rc)
 
 static int webdav_fetch(const char *url, const char *local_path)
 {
+#ifdef _WIN32
+  /* Windows: permissions enforced by NTFS ACLs rather than mode bits */
+  FILE *fp = fopen(local_path, "wb");
+  if (!fp)
+    return errno;
+#else
   /* Create cache file with 0600 permissions so other local users cannot
    * read the encrypted database.  Using open(O_CLOEXEC) + fdopen() rather
    * than fopen() ensures the mode is enforced regardless of the process umask. */
@@ -165,6 +188,7 @@ static int webdav_fetch(const char *url, const char *local_path)
     close(raw_fd);
     return e;
   }
+#endif
 
   CURL *c = make_curl(url);
   if (!c) {

@@ -1,23 +1,28 @@
 /**
  * WebDAV transport plugin test suite.
  *
- * Tests the pwsafe-https.so plugin against a live WebDAV server.
+ * Tests the pwsafe-https plugin against a live WebDAV server.
  * Does NOT require gtest or a full cmake build — compile and run directly.
  *
- * Compile:
+ * Compile (Linux/macOS):
  *   g++ -std=c++17 \
  *       -o /tmp/transport_webdav_test \
  *       src/test/transport_webdav_test.cpp \
  *       -ldl
  *
- * Run from the directory that contains pwsafe-https.so:
- *   cd build && PWSAFE_WEBDAV_TEST_URL=https://myserver/test /tmp/transport_webdav_test
+ * Compile (Windows, from MSVC developer prompt):
+ *   cl /std:c++17 /EHsc \
+ *      src\test\transport_webdav_test.cpp \
+ *      /Fe:transport_webdav_test.exe
+ *
+ * Run from the directory that contains pwsafe-https.so (or .dll):
+ *   cd build && PWSAFE_WEBDAV_TEST_URL=https://myserver/test ./transport_webdav_test
  *
  * Prerequisites:
- *   - pwsafe-https.so in cwd (the binary directory after cmake build)
+ *   - pwsafe-https.so/.dll in cwd (the binary directory after cmake build)
  *   - PWSAFE_WEBDAV_TEST_URL set to the base URL of a writable DAV collection
  *     (e.g. https://webdav.example.com/test)
- *   - ~/.netrc containing credentials for the server
+ *   - ~/.netrc (Unix) or %USERPROFILE%\_netrc (Windows) with server credentials
  *   - the collection must already exist (create with MKCOL if absent)
  *
  * Covers:
@@ -43,7 +48,27 @@
  *     failed lock attempt leaves the internal token map unchanged.
  */
 
-#include <dlfcn.h>
+/* ---- platform plugin-loading abstraction ---- */
+#ifdef _WIN32
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <Windows.h>
+#  define PLUGIN_HANDLE    HMODULE
+#  define plugin_open(p)   LoadLibraryA(p)
+#  define plugin_sym(h,s)  ((void*)GetProcAddress((h),(s)))
+#  define plugin_close(h)  FreeLibrary(h)
+#  define plugin_error()   "[LoadLibrary failed]"
+#  define PLUGIN_NAME "./pwsafe-https.dll"
+#else
+#  include <dlfcn.h>
+#  define PLUGIN_HANDLE    void*
+#  define plugin_open(p)   dlopen((p), RTLD_NOW | RTLD_LOCAL)
+#  define plugin_sym(h,s)  dlsym((h),(s))
+#  define plugin_close(h)  dlclose(h)
+#  define plugin_error()   dlerror()
+#  define PLUGIN_NAME      "./pwsafe-https.so"
+#endif
 
 #include <cassert>
 #include <cerrno>
@@ -54,6 +79,15 @@
 #include <string>
 
 namespace fs = std::filesystem;
+
+/* ---- temp-file path helper ---- */
+
+static std::string g_tmpdir;   /* set in main() */
+
+static std::string tmpf(const char *name)
+{
+  return g_tmpdir + name;
+}
 
 /* ---- minimal PWSTransport mirror (keeps test self-contained) ---- */
 
@@ -130,12 +164,12 @@ static std::string g_base;
 /* ================================================================
  *  1. Plugin loading
  * ================================================================ */
-static void test_plugin_loading(void *handle)
+static void test_plugin_loading(PLUGIN_HANDLE handle)
 {
   SECTION("1. Plugin loading");
 
   auto init = reinterpret_cast<void(*)(pws_register_fn_t)>(
-      dlsym(handle, "pws_plugin_init"));
+      plugin_sym(handle, "pws_plugin_init"));
   CHECK(init != nullptr);
   if (!init) return;
 
@@ -188,9 +222,10 @@ static void test_store_no_lock()
 {
   SECTION("3. store without lock");
 
-  const char *local  = "/tmp/pws_webdav_store_nolock.psafe3";
-  const char *data   = "PWS3webdav-store-nolock";
-  std::string url = g_base + "/pws_webdav_store_nolock.psafe3";
+  std::string local_s  = tmpf("pws_webdav_store_nolock.psafe3");
+  const char *local    = local_s.c_str();
+  const char *data     = "PWS3webdav-store-nolock";
+  std::string url      = g_base + "/pws_webdav_store_nolock.psafe3";
 
   write_file(local, data);
 
@@ -198,7 +233,8 @@ static void test_store_no_lock()
   CHECK(e == 0);
 
   /* Verify: fetch back and compare */
-  const char *fetched = "/tmp/pws_webdav_store_nolock_fetched.psafe3";
+  std::string fetched_s = tmpf("pws_webdav_store_nolock_fetched.psafe3");
+  const char *fetched   = fetched_s.c_str();
   e = g_https->fetch(url.c_str(), fetched);
   CHECK(e == 0);
   CHECK(file_has_content(fetched, data));
@@ -212,7 +248,8 @@ static void test_fetch()
   SECTION("4. fetch");
 
   std::string url = g_base + "/pwsafe_test.psafe3";
-  const char *dst = "/tmp/pws_webdav_fetched.psafe3";
+  std::string dst_s = tmpf("pws_webdav_fetched.psafe3");
+  const char *dst   = dst_s.c_str();
 
   int e = g_https->fetch(url.c_str(), dst);
   CHECK(e == 0);
@@ -227,7 +264,8 @@ static void test_fetch_missing()
   SECTION("5. fetch error (non-existent)");
 
   std::string url = g_base + "/definitely_missing_xyz.psafe3";
-  const char *dst = "/tmp/pws_webdav_fetch_missing.psafe3";
+  std::string dst_s = tmpf("pws_webdav_fetch_missing.psafe3");
+  const char *dst   = dst_s.c_str();
 
   int e = g_https->fetch(url.c_str(), dst);
   CHECK(e != 0);
@@ -247,7 +285,8 @@ static void test_lock_unlock_basic()
   SECTION("6. lock / unlock basic");
 
   std::string url = g_base + "/pws_webdav_lock_basic.psafe3";
-  const char *local = "/tmp/pws_webdav_lock_basic.psafe3";
+  std::string local_s = tmpf("pws_webdav_lock_basic.psafe3");
+  const char *local   = local_s.c_str();
 
   /* Ensure the resource exists before locking */
   write_file(local, "PWS3lock-basic");
@@ -291,7 +330,8 @@ static void test_lock_store_unlock()
 {
   SECTION("7. lock + store + unlock (regression: store with active lock)");
 
-  const char *local   = "/tmp/pws_webdav_lsu.psafe3";
+  std::string local_s = tmpf("pws_webdav_lsu.psafe3");
+  const char *local   = local_s.c_str();
   const char *data_v1 = "PWS3lsu-version1";
   const char *data_v2 = "PWS3lsu-version2";
   std::string url     = g_base + "/pws_webdav_lsu.psafe3";
@@ -318,7 +358,8 @@ static void test_lock_store_unlock()
   CHECK(e == 0);
 
   /* Verify server has the new content by fetching back */
-  const char *fetched = "/tmp/pws_webdav_lsu_fetched.psafe3";
+  std::string fetched_s = tmpf("pws_webdav_lsu_fetched.psafe3");
+  const char *fetched   = fetched_s.c_str();
   e = g_https->fetch(url.c_str(), fetched);
   CHECK(e == 0);
   CHECK(file_has_content(fetched, data_v2));
@@ -342,7 +383,8 @@ static void test_store_after_unlock()
 {
   SECTION("8. store after unlock");
 
-  const char *local  = "/tmp/pws_webdav_sau.psafe3";
+  std::string local_s = tmpf("pws_webdav_sau.psafe3");
+  const char *local   = local_s.c_str();
   const char *data   = "PWS3sau-content";
   std::string url    = g_base + "/pws_webdav_sau.psafe3";
 
@@ -358,7 +400,8 @@ static void test_store_after_unlock()
   int e = g_https->store(local, url.c_str());
   CHECK(e == 0);
 
-  const char *fetched = "/tmp/pws_webdav_sau_fetched.psafe3";
+  std::string fetched_s = tmpf("pws_webdav_sau_fetched.psafe3");
+  const char *fetched   = fetched_s.c_str();
   e = g_https->fetch(url.c_str(), fetched);
   CHECK(e == 0);
   CHECK(file_has_content(fetched, data));
@@ -371,7 +414,8 @@ static void test_multiple_url_locks()
 {
   SECTION("9. Multiple URL locks are independent");
 
-  const char *local = "/tmp/pws_webdav_multi.psafe3";
+  std::string local_s = tmpf("pws_webdav_multi.psafe3");
+  const char *local   = local_s.c_str();
   write_file(local, "PWS3multi");
 
   std::string url_a = g_base + "/pws_webdav_multi_a.psafe3";
@@ -411,7 +455,8 @@ static void test_unlock_idempotent()
 {
   SECTION("10. Unlock idempotent");
 
-  const char *local = "/tmp/pws_webdav_idem.psafe3";
+  std::string local_s = tmpf("pws_webdav_idem.psafe3");
+  const char *local   = local_s.c_str();
   write_file(local, "PWS3idempotent");
   std::string url = g_base + "/pws_webdav_idem.psafe3";
 
@@ -447,7 +492,8 @@ static void test_lock_contention()
 {
   SECTION("11. Lock contention (EBUSY when already locked)");
 
-  const char *local = "/tmp/pws_webdav_contention.psafe3";
+  std::string local_s = tmpf("pws_webdav_contention.psafe3");
+  const char *local   = local_s.c_str();
   write_file(local, "PWS3contention");
   std::string url = g_base + "/pws_webdav_contention.psafe3";
 
@@ -484,6 +530,18 @@ static void test_lock_contention()
  * ================================================================ */
 int main()
 {
+  /* Determine temp directory */
+#ifdef _WIN32
+  {
+    const char *t = getenv("TEMP");
+    if (!t || !*t) t = getenv("TMP");
+    g_tmpdir = t ? std::string(t) + "\\" : "C:\\Temp\\";
+    if (g_tmpdir.back() != '\\') g_tmpdir += '\\';
+  }
+#else
+  g_tmpdir = "/tmp/";
+#endif
+
   const char *env = getenv("PWSAFE_WEBDAV_TEST_URL");
   if (!env || !*env) {
     fprintf(stderr,
@@ -501,11 +559,11 @@ int main()
   printf("==========================================\n");
   printf("Server: %s\n", g_base.c_str());
 
-  void *handle = dlopen("./pwsafe-https.so", RTLD_NOW | RTLD_LOCAL);
+  PLUGIN_HANDLE handle = plugin_open(PLUGIN_NAME);
   if (!handle) {
-    fprintf(stderr, "dlopen failed: %s\n"
-                    "Run this test from the directory containing pwsafe-https.so\n",
-            dlerror());
+    fprintf(stderr, "plugin_open failed: %s\n"
+                    "Run this test from the directory containing " PLUGIN_NAME "\n",
+            plugin_error());
     return 1;
   }
 
@@ -530,6 +588,6 @@ int main()
   printf("\n==========================================\n");
   printf("Results: %d passed, %d failed\n", g_pass, g_fail);
 
-  dlclose(handle);
+  plugin_close(handle);
   return (g_fail == 0) ? 0 : 1;
 }

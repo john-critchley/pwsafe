@@ -1,8 +1,9 @@
 name: WebDAV transport tests
 
-# Runs the plugin test suites (suites 1–3) against the live WebDAV server.
-# Does NOT require a full cmake build: the Makefile ci-live target compiles
-# the plugin .so files directly with g++.
+# Runs the plugin test suites against the live WebDAV server.
+#
+# Linux: uses Makefile.transport-tests (g++ direct build — no cmake).
+# Windows: builds plugins with cl.exe + vcpkg curl (no cmake), runs suite2.
 #
 # Required repository secrets:
 #   WEBDAV_TEST_USER  — basic-auth username for webdav.critchley.biz
@@ -16,12 +17,13 @@ on:
 permissions:
   contents: read
 
-jobs:
-  transport-tests:
-    runs-on: ubuntu-latest
+env:
+  WEBDAV_URL: https://webdav.critchley.biz/test
 
-    env:
-      WEBDAV_URL: https://webdav.critchley.biz/test
+jobs:
+  # ------------------------------------------------------------------ Linux --
+  transport-tests-linux:
+    runs-on: ubuntu-latest
 
     steps:
     - name: Checkout repository
@@ -38,8 +40,6 @@ jobs:
         chmod 600 ~/.netrc
 
     - name: Verify server is reachable
-      # A quick HEAD on the seed file; if the server is down the live tests
-      # are skipped rather than failing the build with a spurious error.
       id: check_server
       run: |
         if curl --silent --netrc --head --max-time 10 \
@@ -69,3 +69,93 @@ jobs:
     - name: Summarise
       if: steps.check_server.outputs.reachable == 'true'
       run: echo "All transport test suites passed against $WEBDAV_URL"
+
+  # ---------------------------------------------------------------- Windows --
+  transport-tests-windows:
+    runs-on: windows-latest
+    env:
+      # Enable GitHub Actions binary cache for vcpkg — avoids rebuilding
+      # curl from source on every run (~15 min without this).
+      VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up MSVC environment
+      uses: ilammy/msvc-dev-cmd@v1.13.0
+
+    - name: Install libcurl via vcpkg
+      run: vcpkg install curl:x64-windows
+      shell: cmd
+
+    - name: Write %USERPROFILE%\_netrc for WebDAV credentials
+      # libcurl on Windows reads %USERPROFILE%\_netrc (underscore, not dot)
+      run: |
+        $creds = "machine webdav.critchley.biz login ${{ secrets.WEBDAV_TEST_USER }} password ${{ secrets.WEBDAV_TEST_PASS }}"
+        $creds | Out-File -FilePath "$env:USERPROFILE\_netrc" -Encoding ascii -NoNewline
+      shell: pwsh
+
+    - name: Verify server is reachable
+      id: check_server_win
+      run: |
+        $url = "$env:WEBDAV_URL/pwsafe_test.psafe3"
+        $user = "${{ secrets.WEBDAV_TEST_USER }}"
+        $pass = "${{ secrets.WEBDAV_TEST_PASS }}"
+        $pair = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${user}:${pass}"))
+        try {
+          $r = Invoke-WebRequest -Uri $url -Method HEAD -TimeoutSec 10 `
+               -Headers @{Authorization="Basic $pair"} -ErrorAction Stop
+          if ($r.StatusCode -eq 200) {
+            echo "reachable=true" >> $env:GITHUB_OUTPUT
+          } else {
+            echo "reachable=false" >> $env:GITHUB_OUTPUT
+          }
+        } catch {
+          echo "reachable=false" >> $env:GITHUB_OUTPUT
+          Write-Host "WARNING: WebDAV server unreachable — live tests will be skipped"
+        }
+      shell: pwsh
+
+    - name: Build pwsafe-https.dll
+      if: steps.check_server_win.outputs.reachable == 'true'
+      run: |
+        set VCPKG=%VCPKG_INSTALLATION_ROOT%
+        set CURL_INC=%VCPKG%\installed\x64-windows\include
+        set CURL_LIB=%VCPKG%\installed\x64-windows\lib
+        mkdir build 2>nul
+        cl /std:c++17 /EHsc /LD /DDEVELOPMENT ^
+           /I"src" /I"%CURL_INC%" ^
+           src\os\plugins\webdav\transport-webdav.cpp ^
+           /Fe:build\pwsafe-https.dll ^
+           "%CURL_LIB%\libcurl.lib" ^
+           /link /SUBSYSTEM:WINDOWS /MACHINE:X64
+        copy build\pwsafe-https.dll build\pwsafe-http.dll
+      shell: cmd
+
+    - name: Build transport_webdav_test.exe
+      if: steps.check_server_win.outputs.reachable == 'true'
+      run: |
+        cl /std:c++17 /EHsc ^
+           src\test\transport_webdav_test.cpp ^
+           /Fe:build\transport_webdav_test.exe
+      shell: cmd
+
+    - name: Copy curl runtime DLL to test directory
+      if: steps.check_server_win.outputs.reachable == 'true'
+      run: |
+        copy %VCPKG_INSTALLATION_ROOT%\installed\x64-windows\bin\libcurl.dll build\
+      shell: cmd
+
+    - name: Suite 2 — WebDAV plugin (live server, Windows)
+      if: steps.check_server_win.outputs.reachable == 'true'
+      working-directory: build
+      run: |
+        set PWSAFE_WEBDAV_TEST_URL=%WEBDAV_URL%
+        transport_webdav_test.exe
+      shell: cmd
+
+    - name: Summarise
+      if: steps.check_server_win.outputs.reachable == 'true'
+      run: echo "Windows WebDAV transport tests passed against %WEBDAV_URL%"
+      shell: cmd

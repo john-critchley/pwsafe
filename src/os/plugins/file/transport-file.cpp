@@ -34,8 +34,13 @@
  *
  * On ELF (Linux): injected into the .comment section via inline asm.
  * On Mach-O (macOS): injected into __TEXT,__cstring which is always kept.
+ * On MSVC (Windows): a dllexport const char[] forces the string into .rdata.
  */
-#ifdef __APPLE__
+#if defined(_MSC_VER)
+extern "C" __declspec(dllexport) const char pws_transport_id[] =
+    "PWS_TRANSPORT_INFO:1:file:Local file transport (testing)";
+#pragma comment(linker, "/INCLUDE:pws_transport_id")
+#elif defined(__APPLE__)
 __asm__(".section __TEXT,__cstring,cstring_literals\n"
         ".string \"PWS_TRANSPORT_INFO:1:file:Local file transport (testing)\"\n"
         ".previous\n");

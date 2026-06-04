@@ -28,8 +28,22 @@
 #include "../dir.h"
 #include "../env.h"
 #include "../debug.h"
+#include "../transport.h"
 
 #include "../../core/core.h"
+
+/* Convert a wide-character filename to UTF-8 for transport API calls. */
+static std::string wstr_to_utf8(const stringT &ws)
+{
+  if (ws.empty()) return "";
+  int n = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1,
+                              nullptr, 0, nullptr, nullptr);
+  if (n <= 0) return "";
+  std::string result(n - 1, '\0');
+  WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, &result[0], n,
+                      nullptr, nullptr);
+  return result;
+}
 
 const TCHAR pws_os::PathSeparator = _T('\\');
 
@@ -52,22 +66,31 @@ namespace {
 
 bool pws_os::FileExists(const stringT &filename)
 {
+  std::string fn = wstr_to_utf8(unquote(filename));
+  if (pws_is_transport_url(fn)) {
+    const PWSTransport *t = pws_find_transport(fn);
+    if (pws_transport_debug())
+      fprintf(stderr, "[pwsafe-transport] FileExists(%s): transport=%s\n",
+              fn.c_str(), t ? "found" : "not found");
+    return t && (t->exists(fn.c_str()) == 0);
+  }
   struct _stat statbuf;
-  int status;
-
-  status = _tstat(unquote(filename).c_str(), &statbuf);
-  return (status == 0 && (statbuf.st_mode & _S_IFREG)); // stat() succeeded and we're a regular file (not a directory)
+  int status = _tstat(unquote(filename).c_str(), &statbuf);
+  return (status == 0 && (statbuf.st_mode & _S_IFREG));
 }
 
 bool pws_os::FileExists(const stringT &filename, bool &bReadOnly)
 {
-  bool retval;
   bReadOnly = false;
-
-  retval = pws_os::FileExists(filename); // false if not found or if a directory
-  if (retval) {
-    bReadOnly = (_taccess(unquote(filename).c_str(), W_OK) != 0);
+  std::string fn = wstr_to_utf8(unquote(filename));
+  if (pws_is_transport_url(fn)) {
+    const PWSTransport *t = pws_find_transport(fn);
+    /* Remote files: treat as read-write if they exist */
+    return t && (t->exists(fn.c_str()) == 0);
   }
+  bool retval = pws_os::FileExists(filename);
+  if (retval)
+    bReadOnly = (_taccess(unquote(filename).c_str(), W_OK) != 0);
   return retval;
 }
 
@@ -228,9 +251,20 @@ static void GetLocker(const stringT &lock_filename, stringT &locker)
   }
 }
 
-bool pws_os::LockFile(const stringT &filename, stringT &locker, 
+bool pws_os::LockFile(const stringT &filename, stringT &locker,
                       HANDLE &lockFileHandle)
 {
+  std::string fn = wstr_to_utf8(unquote(filename));
+  if (pws_is_transport_url(fn)) {
+    int rc = pws_lockd_acquire(fn);
+    if (pws_transport_debug())
+      fprintf(stderr, "[pwsafe-transport] LockFile(%s) -> rc=%d %s\n",
+              fn.c_str(), rc,
+              rc == 0 ? "(locked)" : rc == ENOTSUP ? "(no-op)" : "(failed)");
+    if (rc == 0)
+      pws_lock_register(fn);
+    return (rc == 0 || rc == ENOTSUP);
+  }
   auto fname = unquote(filename);
   const stringT lock_filename = GetLockFileName(fname);
   stringT s_locker;
@@ -349,6 +383,14 @@ bool pws_os::LockFile(const stringT &filename, stringT &locker,
 void pws_os::UnlockFile(const stringT &filename,
                         HANDLE &lockFileHandle)
 {
+  std::string fn = wstr_to_utf8(unquote(filename));
+  if (pws_is_transport_url(fn)) {
+    pws_lockd_release(fn);
+    pws_lock_unregister(fn);
+    if (pws_transport_debug())
+      fprintf(stderr, "[pwsafe-transport] UnlockFile(%s)\n", fn.c_str());
+    return;
+  }
   const stringT user = pws_os::getusername();
   const stringT host = pws_os::gethostname();
   const stringT pid = pws_os::getprocessid();
@@ -369,6 +411,9 @@ void pws_os::UnlockFile(const stringT &filename,
 
 bool pws_os::IsLockedFile(const stringT &filename)
 {
+  std::string fn = wstr_to_utf8(unquote(filename));
+  if (pws_is_transport_url(fn))
+    return pws_has_lock(fn);
   const stringT lock_filename = GetLockFileName(unquote(filename));
   // under this scheme, we need to actually try to open the file to determine
   // if it's locked.
@@ -405,17 +450,87 @@ bool pws_os::IsLockedFile(const stringT &filename)
 
 std::FILE *pws_os::FOpen(const stringT &filename, const TCHAR *mode)
 {
-  std::FILE *fd = NULL;
-  if (!filename.empty()) {
-	  _tfopen_s(&fd, unquote(filename).c_str(), mode);
-  } else { // set to stdin/stdout, depending on mode[0] (r/w/a)
-	  fd = mode[0] == L'r' ? stdin : stdout;
+  if (filename.empty())
+    return mode[0] == L'r' ? stdin : stdout;
+
+  std::string fn = wstr_to_utf8(unquote(filename));
+
+  if (pws_is_transport_url(fn)) {
+    const PWSTransport *t = pws_find_transport(fn);
+    if (!t) {
+      if (pws_transport_debug())
+        fprintf(stderr, "[pwsafe-transport] FOpen(%s): no plugin for scheme\n",
+                fn.c_str());
+      return nullptr;
+    }
+
+    std::string cache = pws_get_cache_path(fn);
+    bool writing = (mode[0] != L'r');
+
+    if (pws_transport_debug())
+      fprintf(stderr, "[pwsafe-transport] FOpen(%s): %s, cache=%s\n",
+              fn.c_str(), writing ? "write" : "read", cache.c_str());
+
+    if (!writing) {
+      int rc = t->fetch(fn.c_str(), cache.c_str());
+      if (rc != 0) {
+        if (pws_transport_debug())
+          fprintf(stderr, "[pwsafe-transport] FOpen(%s): fetch failed rc=%d\n",
+                  fn.c_str(), rc);
+        return nullptr;
+      }
+    }
+
+    FILE *fd = fopen(cache.c_str(), writing ? "wb" : "rb");
+    if (fd)
+      pws_cache_register(fd, fn, cache, writing);
+    else if (pws_transport_debug())
+      fprintf(stderr, "[pwsafe-transport] FOpen: fopen cache '%s' failed\n",
+              cache.c_str());
+    return fd;
   }
+
+  std::FILE *fd = NULL;
+  _tfopen_s(&fd, unquote(filename).c_str(), mode);
   return fd;
 }
 
 int pws_os::FClose(std::FILE *fd, const bool &bIsWrite)
 {
+  if (fd == nullptr)
+    return 0;
+
+  std::string url, cache_path;
+  bool was_write;
+  if (pws_cache_lookup(fd, url, cache_path, was_write)) {
+    if (bIsWrite) fflush(fd);
+    pws_cache_remove(fd);
+    int rc = fclose(fd);
+
+    if (bIsWrite) {
+      int store_rc;
+      if (pws_has_lock(url)) {
+        if (pws_transport_debug())
+          fprintf(stderr, "[pwsafe-transport] FClose(%s): store via lockd\n",
+                  url.c_str());
+        store_rc = pws_lockd_store(cache_path, url);
+      } else {
+        const PWSTransport *t = pws_find_transport(url);
+        if (pws_transport_debug())
+          fprintf(stderr, "[pwsafe-transport] FClose(%s): store direct\n",
+                  url.c_str());
+        store_rc = t ? t->store(cache_path.c_str(), url.c_str()) : ENOENT;
+      }
+      if (store_rc != 0) {
+        if (pws_transport_debug())
+          fprintf(stderr, "[pwsafe-transport] FClose(%s): store failed rc=%d\n",
+                  url.c_str(), store_rc);
+        return store_rc;
+      }
+    }
+    return rc;
+  }
+
   if (fd != NULL) {
     if (bIsWrite) {
       // Flush the data buffers

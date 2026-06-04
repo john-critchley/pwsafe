@@ -55,9 +55,16 @@
  * conditional header (e.g. WebDAV `If: (<token>)`) without being told.
  */
 
+#include <cerrno>
 #include <cstddef>
 #include <cstdio>
 #include <string>
+
+/* MSVC does not define ENOTSUP (a POSIX extension).  Use a value that does
+ * not collide with any standard MSVC errno code (which top out around 138). */
+#if defined(_MSC_VER) && !defined(ENOTSUP)
+#  define ENOTSUP 252
+#endif
 
 #define PWSTransport_ABI_VERSION 1
 

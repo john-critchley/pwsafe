@@ -1,9 +1,9 @@
 add_library(pwsafe-file MODULE transport-file.cpp)
 
-# No "lib" prefix: produces pwsafe-file.so, not libpwsafe-file.so
+# No "lib" prefix: produces pwsafe-file.so (Unix) or pwsafe-file.dll (Windows)
 set_target_properties(pwsafe-file PROPERTIES
   PREFIX ""
-  SUFFIX ".so"
+  SUFFIX $<IF:$<BOOL:${WIN32}>,.dll,.so>
   CXX_STANDARD 17
 )
 

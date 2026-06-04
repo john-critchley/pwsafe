@@ -19,6 +19,8 @@ if (WIN32)
     windows/sleep.cpp
     windows/utf8conv.cpp
     windows/UUID.cpp
+    windows/transport.cpp
+    windows/transport_lockd.cpp
     )
 if (NOT NO_YUBI)
     list(APPEND OS_SRCS
@@ -34,6 +36,8 @@ endif (NOT WX_WINDOWS)
 if (NOT NO_YUBI)
     add_subdirectory (windows/yubi)
 endif ()
+  add_subdirectory(plugins/file)
+  add_subdirectory(plugins/webdav)
   elseif (APPLE)
   set (OS_SRCS
     mac/cleanup.cpp
