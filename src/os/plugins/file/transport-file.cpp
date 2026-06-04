@@ -139,7 +139,7 @@ static const PWSTransport file_transport = {
   file_cleanup
 };
 
-extern "C" void pws_plugin_init(pws_register_fn_t reg)
+extern "C" PWS_EXPORT void pws_plugin_init(pws_register_fn_t reg)
 {
   reg(&file_transport);
 }

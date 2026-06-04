@@ -66,6 +66,12 @@
 #  define ENOTSUP 252
 #endif
 
+#ifdef _WIN32
+#  define PWS_EXPORT __declspec(dllexport)
+#else
+#  define PWS_EXPORT
+#endif
+
 #define PWSTransport_ABI_VERSION 1
 
 struct PWSTransport {

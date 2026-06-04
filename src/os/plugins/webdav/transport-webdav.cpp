@@ -518,7 +518,7 @@ static const PWSTransport http_transport = {
   nullptr   /* cleanup handled by https_transport */
 };
 
-extern "C" void pws_plugin_init(pws_register_fn_t reg)
+extern "C" PWS_EXPORT void pws_plugin_init(pws_register_fn_t reg)
 {
   curl_global_init(CURL_GLOBAL_DEFAULT);
   reg(&https_transport);
