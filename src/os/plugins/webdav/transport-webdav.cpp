@@ -402,7 +402,7 @@ static int webdav_lock(const char *url, char *token_out, size_t token_len)
   struct curl_slist *hdrs = nullptr;
   hdrs = curl_slist_append(hdrs, "Content-Type: application/xml; charset=utf-8");
   hdrs = curl_slist_append(hdrs, "Depth: 0");
-  hdrs = curl_slist_append(hdrs, "Timeout: Second-300");
+  hdrs = curl_slist_append(hdrs, "Timeout: Second-30");
 
   LockTokenCtx ctx;
   curl_easy_setopt(c, CURLOPT_CUSTOMREQUEST, "LOCK");
